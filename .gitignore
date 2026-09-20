@@ -1,5 +1,5 @@
 # Data - never committed
-data/
+/data/
 
 # Results - keep figures, ignore everything else (logs, tables, checkpoints)
 results/*

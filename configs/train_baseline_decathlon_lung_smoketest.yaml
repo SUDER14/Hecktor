@@ -1,0 +1,90 @@
+# Local smoke-test-only variant of configs/train_baseline_decathlon_lung.yaml.
+#
+# Exists because the local dev machine has 8GB RAM and resampling a
+# full-resolution Task06_Lung CT volume to 1mm isotropic (the production
+# baseline.resample_spacing) grows past ~1GB for a single volume and was
+# observed OOM-killing the process before it printed a single line -- see
+# CLAUDE.md: "Training runs on Google Colab Pro, not locally... Local machine
+# is for code, git, figures and writing." Colab has enough RAM to run the
+# production config's --overfit-one-batch directly; this file exists only so
+# the pipeline (shapes, loss reduction, gradient flow) can be sanity-checked
+# locally too.
+#
+# Only baseline.resample_spacing and checkpoint.dir differ from the
+# production config -- everything else (split, conditioning stats, model,
+# loss) is identical, so a PASS here is evidence about the same code paths a
+# production run exercises, just at a coarser (and therefore cheaper) grid.
+# This file is NOT a substitute for running the production config's smoke
+# test before trusting a real training run's numbers.
+
+seed: 42
+
+dataset: decathlon
+data_dir: data/Task06_Lung
+
+split:
+  strategy: random
+  val_frac: 0.15
+  test_frac: 0.15
+  path: configs/splits/decathlon_lung_seed42.json
+
+conditioning:
+  stats_path: configs/splits/decathlon_lung_seed42_conditioning_stats.json
+
+patch:
+  spatial_size: [96, 96, 96]
+  pos: 2
+  neg: 1
+  num_samples: 4
+
+intensity:
+  ct_window:
+    min: -1000
+    max: 400
+  pet:
+    suv_clip_max: 20.0
+
+baseline:
+  resample_spacing: [2.0, 2.0, 2.0]   # mm -- coarser than production's 1.0mm; ~8x fewer voxels per resampled volume
+
+model:
+  name: baseline_unet
+  in_channels: 1
+  out_channels: 2
+  channels: [16, 32, 64, 128, 256]
+  strides: [2, 2, 2, 2]
+  num_res_units: 2
+
+loss:
+  include_background: true
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  smooth: 1.0                   # dice smoothing; MONAI's 1e-5 default gives empty-target crops a ~1.0 dice loss floor
+
+train:
+  device: auto
+  amp: true
+  optimizer: adamw               # AdamW; lr and weight_decay below are standard defaults (lr 1e-4, torch AdamW decay 0.01), NOT tuned values
+  lr: 0.0001
+  weight_decay: 0.01
+  n_epochs: 100
+  val_every: 5
+  loader_batch_size: 1
+  micro_batch_size: 2
+  accum_steps: 4
+  sw_batch_size: 1
+  num_workers: 0
+
+scheduler:
+  name: cosine
+  eta_min: 0.0000001
+
+checkpoint:
+  dir: results/checkpoints/_smoketest_only   # never used for a real run -- overfit-one-batch doesn't checkpoint anyway
+  keep_last_n: 3
+
+wandb:
+  enabled: false
+  project: acf-baseline
+  run_name: smoketest
+  mode: online

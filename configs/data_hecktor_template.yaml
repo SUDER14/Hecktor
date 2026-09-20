@@ -1,0 +1,36 @@
+# Template only -- HECKTOR access has not been granted yet (see CLAUDE.md).
+# Paths, patient-id/centre parsing and file-naming assumptions here are UNVERIFIED
+# against real HECKTOR data; see HecktorAdapter's docstring in src/data/adapters.py.
+# Do not run this for real until access lands and the adapter has been re-checked.
+#
+# Also unresolved as of this config: build_monai_datasets() only supports
+# single-modality data today. HECKTOR is dual-modality (CT+PT); joint sampling
+# needs the resolution-asymmetric crop-alignment design flagged in
+# src/data/dataset.py before this config can drive actual training.
+
+seed: 42
+
+dataset: hecktor
+data_dir: data/hecktor2025
+
+split:
+  strategy: group_by_centre    # held-out-centre protocol is the central experiment
+  test_centres: []              # fill in once real centre codes are known
+  val_frac: 0.15
+  path: configs/splits/hecktor_seed42.json
+
+conditioning:
+  stats_path: configs/splits/hecktor_seed42_conditioning_stats.json
+
+patch:
+  spatial_size: [96, 96, 96]
+  pos: 2
+  neg: 1
+  num_samples: 4
+
+intensity:
+  ct_window:
+    min: -1000
+    max: 400
+  pet:
+    suv_clip_max: 20.0        # UNVERIFIED: confirm SUVbw vs raw activity first

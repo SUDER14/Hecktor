@@ -1,0 +1,23 @@
+# Data - never committed
+data/
+
+# Results - keep figures, ignore everything else (logs, tables, checkpoints)
+results/*
+!results/figures/
+!results/figures/**
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Notebooks checkpoints
+.ipynb_checkpoints/

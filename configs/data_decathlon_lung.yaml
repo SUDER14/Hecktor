@@ -1,0 +1,32 @@
+# Data-loading config for Task06_Lung, driving src/data/dataset.py.
+# CT-only: Decathlon has no PET task, so the pet.* block below is inert here --
+# see the PET SUV note in the run report / transforms.py's module docstring.
+
+seed: 42
+
+dataset: decathlon
+data_dir: data/Task06_Lung
+
+split:
+  strategy: random          # no centre metadata in Decathlon filenames
+  val_frac: 0.15
+  test_frac: 0.15
+  path: configs/splits/decathlon_lung_seed42.json
+
+conditioning:
+  # Fit on the train split only, then reused unchanged at val/test.
+  stats_path: configs/splits/decathlon_lung_seed42_conditioning_stats.json
+
+patch:
+  spatial_size: [96, 96, 96]
+  pos: 2                    # RandCropByPosNegLabeld pos:neg ratio -- tumours
+  neg: 1                    # are a tiny fraction of the volume, so bias
+                             # sampling toward foreground-containing crops
+  num_samples: 4            # crops drawn per volume per training step
+
+intensity:
+  ct_window:
+    min: -1000               # HU, air
+    max: 400                 # HU, above soft tissue/early bone
+  pet:
+    suv_clip_max: 20.0       # UNVERIFIED: assumes SUVbw units, see report

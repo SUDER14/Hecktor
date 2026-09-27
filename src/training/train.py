@@ -51,6 +51,7 @@ Usage:
     python -m src.training.train --config configs/train_baseline_decathlon_lung.yaml --overfit-one-batch
     python -m src.training.train --config configs/train_baseline_decathlon_lung.yaml
     python -m src.training.train --config configs/train_baseline_decathlon_lung.yaml --resume
+    python -m src.training.train --config configs/cpu_smoke.yaml --device cpu --overfit-one-batch   # local, pipeline check only
 """
 
 from __future__ import annotations
@@ -157,6 +158,29 @@ def resolve_device(config: dict) -> torch.device:
     if requested == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(requested)
+
+
+def warn_if_smoke_only(config: dict, device: torch.device) -> None:
+    """Loud banner whenever a run can't produce a reportable number: on CPU,
+    or under a config marked smoke_only (configs/cpu_smoke.yaml). CPU runs use
+    shrunken patches/grids to be tractable, so anything they print is pipeline
+    evidence only -- the banner is there so it never gets copied into a results
+    table by mistake."""
+    reasons = []
+    if device.type == "cpu":
+        reasons.append("running on CPU")
+    if config.get("smoke_only", False):
+        reasons.append("config is marked smoke_only")
+    if not reasons:
+        return
+    bar = "!" * 78
+    print(
+        f"\n{bar}\n"
+        f"!!  PIPELINE VERIFICATION ONLY ({'; '.join(reasons)}).\n"
+        "!!  Nothing this run prints is a real result -- never report its loss/Dice.\n"
+        "!!  Full training and every reported number come from Colab GPU runs.\n"
+        f"{bar}\n"
+    )
 
 
 def _micro_batches(batch: dict, micro_batch_size: int):
@@ -315,6 +339,7 @@ def train(config: dict, resume: bool) -> None:
     seed_everything(config["seed"])
     device = resolve_device(config)
     print(f"device: {device}")
+    warn_if_smoke_only(config, device)
     git_info = get_git_info()
     print(f"git commit: {git_info['commit']}  dirty: {git_info['dirty']}")
     if git_info["commit"] is None or git_info["dirty"]:
@@ -412,6 +437,7 @@ def overfit_one_batch(
     seed_everything(config["seed"])
     device = resolve_device(config)
     print(f"device: {device}")
+    warn_if_smoke_only(config, device)
 
     datasets = build_datasets(config)
     if len(datasets["train"]) == 0:
@@ -547,6 +573,11 @@ def main():
     )
     ap.add_argument("--resume", action="store_true")
     ap.add_argument(
+        "--device", choices=["auto", "cpu", "cuda"], default=None,
+        help="overrides config train.device (e.g. --device cpu on a machine without CUDA); "
+             "any CPU run prints a 'pipeline verification only' banner",
+    )
+    ap.add_argument(
         "--override", action="append", default=[], metavar="KEY=VALUE",
         help="override a config value, e.g. --override checkpoint.dir=/content/drive/MyDrive/x "
              "(repeatable; the key must already exist in the config)",
@@ -554,6 +585,8 @@ def main():
     args = ap.parse_args()
 
     config = apply_overrides(load_config(args.config), args.override)
+    if args.device is not None:
+        config["train"]["device"] = args.device
 
     if args.overfit_one_batch:
         lr = args.lr if args.lr is not None else 1e-2

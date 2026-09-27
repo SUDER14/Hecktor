@@ -1,0 +1,2 @@
+# Dashboard-only dependency; not installed on Colab.
+streamlit>=1.46   # width="stretch" on st.image/st.dataframe

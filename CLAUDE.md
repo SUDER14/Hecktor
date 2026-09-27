@@ -29,10 +29,15 @@ Segmentation Decathlon**, which is freely downloadable and has real spacing vari
 - [x] Spacing analysis run on real data (outputs in `results/spacing_task06_lung/`)
 - [x] Data loader (`src/data/`; split + conditioning stats committed in `configs/splits/`)
 - [ ] Baseline single-modality 3D U-Net — code, train loop, per-epoch checkpointing
-      and resume are written; **not yet validated**: the overfit-one-batch test has
-      not passed (last seen plateauing on CPU at 2 mm), and nothing has run on a
-      GPU. No Colab run, no measured epoch time, no validation Dice yet.
-- [ ] Repo has one local commit (splits only), no remote — Colab cannot clone it yet
+      and resume are written; **not yet validated at production scale**:
+      overfit-one-batch PASSED only at CPU smoke scale (`configs/cpu_smoke.yaml`:
+      32³ patch, 2 mm grid, one crop with 101 fg voxels; fg Dice 0.9187 at iter 55).
+      That is a pipeline check, not a result. Not yet run at 96³/1 mm, nothing has
+      run on a GPU. No Colab run, no measured epoch time, no validation Dice yet.
+- [x] Repo pushed to github.com/SUDER14/Hecktor (`origin`) — Colab can clone it
+- [x] Read-only local data-exploration dashboard (`frontend/`, Streamlit;
+      `streamlit run frontend/app.py --server.address localhost`). Training-progress
+      page is a "no runs yet" stub until Colab runs exist.
 - [ ] Dual-encoder baseline
 - [ ] Hypernetwork + FiLM
 - [ ] Evidential head + calibration

@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import time
 from pathlib import Path
@@ -67,7 +68,7 @@ import yaml
 from monai.data import DataLoader as MonaiDataLoader
 from monai.inferers import SlidingWindowInferer
 from monai.losses import DiceCELoss
-from monai.metrics import DiceMetric, HausdorffDistanceMetric
+from monai.metrics import DiceMetric, compute_hausdorff_distance
 from monai.networks.utils import one_hot
 from torch.amp import GradScaler, autocast
 
@@ -244,7 +245,17 @@ def validate(model, val_dataset, loss_fn, device, config) -> dict:
     every baseline volume (train and val) is resampled to; passing it
     explicitly (rather than relying on the metric's spacing=None default,
     which is numerically identical only because that spacing happens to be
-    1.0mm) keeps this correct if resample_spacing ever changes."""
+    1.0mm) keeps this correct if resample_spacing ever changes.
+
+    HD95 APPROACH (keep identical across all runs, or HD95 is not comparable):
+    full-resolution, no downsampling. torch.quantile() inside MONAI's HD95
+    has a ~16M-element limit, which full-volume surface-distance tensors can
+    exceed ("quantile() input tensor is too large"). Rather than downsample,
+    the call is guarded per sample: a failing sample gets HD95 = NaN with a
+    warning, and the reported "hd95" is the nanmean over the samples that
+    succeeded. "hd95_n_failed" says how many were excluded, so a mean over
+    fewer samples is never mistaken for a mean over all of them. Dice is
+    unaffected. (Downsampling before HD95 was considered and not used.)"""
     model.eval()
     roi_size = config["patch"]["spatial_size"]
     sw_batch_size = config["train"].get("sw_batch_size", 1)
@@ -252,9 +263,8 @@ def validate(model, val_dataset, loss_fn, device, config) -> dict:
     spacing = config["baseline"]["resample_spacing"]
     inferer = SlidingWindowInferer(roi_size=roi_size, sw_batch_size=sw_batch_size)
     dice_metric = DiceMetric(include_background=False, reduction="mean")
-    hd95_metric = HausdorffDistanceMetric(include_background=False, percentile=95, reduction="mean")
 
-    losses = []
+    losses, hd95_per_sample = [], []
     for item in val_dataset:
         image = item["image"].unsqueeze(0).to(device)
         label = item["label"].unsqueeze(0).to(device)
@@ -264,13 +274,25 @@ def validate(model, val_dataset, loss_fn, device, config) -> dict:
         pred = torch.argmax(torch.softmax(logits, dim=1), dim=1, keepdim=True)
         pred_oh, label_oh = one_hot(pred, n_classes), one_hot(label, n_classes)
         dice_metric(y_pred=pred_oh, y=label_oh)
-        hd95_metric(y_pred=pred_oh, y=label_oh, spacing=spacing)
+        try:
+            hd95 = compute_hausdorff_distance(
+                pred_oh, label_oh, include_background=False, percentile=95, spacing=spacing
+            ).nanmean().item()
+        except RuntimeError as exc:  # torch.quantile size limit on full-res volumes
+            print(f"  ! HD95 failed for a validation sample, recording NaN: {exc}")
+            hd95 = float("nan")
+        hd95_per_sample.append(hd95)
 
     mean_dice = dice_metric.aggregate().item()
-    mean_hd95 = hd95_metric.aggregate().item()
     dice_metric.reset()
-    hd95_metric.reset()
-    return {"loss": sum(losses) / len(losses), "dice": mean_dice, "hd95": mean_hd95}
+    valid_hd95 = [h for h in hd95_per_sample if not math.isnan(h)]
+    mean_hd95 = sum(valid_hd95) / len(valid_hd95) if valid_hd95 else float("nan")
+    return {
+        "loss": sum(losses) / len(losses),
+        "dice": mean_dice,
+        "hd95": mean_hd95,
+        "hd95_n_failed": len(hd95_per_sample) - len(valid_hd95),
+    }
 
 
 def get_git_info() -> dict:
@@ -401,7 +423,8 @@ def train(config: dict, resume: bool) -> None:
             is_best = metrics["dice"] > best_dice
             best_dice = max(best_dice, metrics["dice"])
             msg += f"  val_loss={metrics['loss']:.4f}  val_dice={metrics['dice']:.4f}  val_hd95={metrics['hd95']:.4f}"
-            log.update({"val_loss": metrics["loss"], "val_dice": metrics["dice"], "val_hd95": metrics["hd95"]})
+            log.update({"val_loss": metrics["loss"], "val_dice": metrics["dice"], "val_hd95": metrics["hd95"],
+                        "val_hd95_n_failed": metrics["hd95_n_failed"]})
         print(msg)
 
         if wandb_mod is not None:

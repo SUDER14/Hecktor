@@ -37,8 +37,41 @@ class SegmentationDataset(Protocol):
     def training_samples(self) -> list[dict]: ...
 
 
+NIFTI_SUFFIXES = (".nii.gz", ".nii")
+
+
+def is_junk_file(path: str | Path) -> bool:
+    """True for macOS resource-fork files ("._foo.nii.gz") and other dotfiles.
+
+    Zipped-on-a-Mac re-uploads carry these next to the real data under the
+    real data's extension, but they are a few hundred bytes of metadata, not
+    NIfTI -- never treat them as volumes.
+    """
+    return Path(path).name.startswith(".")
+
+
+def resolve_nifti(path: str | Path) -> Path:
+    """Return whichever of <stem>.nii.gz / <stem>.nii actually exists on disk.
+
+    Re-uploads of the same dataset differ in compression (e.g. the Kaggle copy
+    of Task06_Lung is uncompressed), while dataset.json and the documented
+    HECKTOR convention both name .nii.gz. nibabel reads either transparently,
+    so only the filename needs resolving. If neither exists the original path
+    is returned unchanged so the caller's own error names what was expected.
+    """
+    path = Path(path)
+    if path.exists():
+        return path
+    stem = _strip_nii_suffix(path.name)
+    for suffix in NIFTI_SUFFIXES:
+        candidate = path.with_name(stem + suffix)
+        if candidate.exists():
+            return candidate
+    return path
+
+
 def _strip_nii_suffix(name: str) -> str:
-    for suffix in (".nii.gz", ".nii"):
+    for suffix in NIFTI_SUFFIXES:
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return name
@@ -75,8 +108,10 @@ class DecathlonAdapter:
     def training_samples(self) -> list[dict]:
         samples = []
         for entry in self.meta["training"]:
-            image_path = self._resolve(entry["image"])
-            label_path = self._resolve(entry["label"])
+            image_path = resolve_nifti(self._resolve(entry["image"]))
+            label_path = resolve_nifti(self._resolve(entry["label"]))
+            if is_junk_file(image_path) or is_junk_file(label_path):
+                continue
             samples.append(
                 {
                     "patient_id": _strip_nii_suffix(image_path.name),
@@ -122,8 +157,11 @@ class HecktorAdapter:
 
     def training_samples(self) -> list[dict]:
         by_patient: dict[str, dict[str, Path]] = {}
-        for path in sorted(self.images_dir.glob("*.nii.gz")):
-            if path.name.startswith("."):
+        image_files = sorted(
+            list(self.images_dir.glob("*.nii.gz")) + list(self.images_dir.glob("*.nii"))
+        )
+        for path in image_files:
+            if is_junk_file(path):
                 continue
             m = self.MODALITY_RE.search(path.name)
             if not m:
@@ -139,7 +177,7 @@ class HecktorAdapter:
 
         samples = []
         for patient_id, modality_paths in sorted(by_patient.items()):
-            label_path = self.labels_dir / f"{patient_id}.nii.gz"
+            label_path = resolve_nifti(self.labels_dir / f"{patient_id}.nii.gz")
             if not label_path.exists():
                 raise FileNotFoundError(
                     f"No label found for {patient_id} at {label_path}"

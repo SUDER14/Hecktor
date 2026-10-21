@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -72,6 +73,7 @@ from monai.metrics import DiceMetric
 from monai.networks.utils import one_hot
 from torch.amp import GradScaler, autocast
 
+from src.data.cache import build_cached_datasets
 from src.data.dataset import build_monai_datasets, load_config
 from src.data.seed import seed_everything
 from src.eval.metrics import hd95 as hd95_mm
@@ -98,11 +100,32 @@ def build_model(config: dict) -> torch.nn.Module:
 
 
 def build_datasets(config: dict) -> dict:
+    """Reads the preprocessing cache when config["cache"]["dir"] is set (scripts/precompute_cache.py
+    builds it; raises if entries are missing or stale), else the original load+resample pipeline."""
+    if config.get("cache", {}).get("dir"):
+        return build_cached_datasets(config)
     name = config["model"]["name"]
     if name not in TRANSFORM_BUILDERS:
         raise ValueError(f"unknown model {name!r}; registered: {list(TRANSFORM_BUILDERS)}")
     train_fn, val_fn = TRANSFORM_BUILDERS[name]
     return build_monai_datasets(config, train_fn, val_fn)
+
+
+def build_train_loader(dataset, config: dict, device: torch.device) -> MonaiDataLoader:
+    """num_workers: an int, or "auto" for os.cpu_count(). Workers persist across epochs (no
+    respawn + re-import each epoch) and batches are pinned for async host->GPU copies on CUDA."""
+    t = config["train"]
+    nw = t.get("num_workers", 0)
+    nw = (os.cpu_count() or 0) if nw == "auto" else int(nw)
+    return MonaiDataLoader(
+        dataset,
+        batch_size=t["loader_batch_size"],
+        shuffle=True,
+        num_workers=nw,
+        pin_memory=device.type == "cuda",
+        persistent_workers=nw > 0,
+        prefetch_factor=2 if nw > 0 else None,
+    )
 
 
 def build_loss(config: dict) -> DiceCELoss:
@@ -203,19 +226,32 @@ def _micro_batches(batch: dict, micro_batch_size: int):
         yield images[sl], labels[sl]
 
 
-def train_one_epoch(model, loader, loss_fn, optimizer, scaler, device, config) -> float:
+def train_one_epoch(model, loader, loss_fn, optimizer, scaler, device, config, timing: dict | None = None) -> float:
+    """If `timing` is given it is filled with data_s (time blocked waiting on the loader), gpu_s
+    (host->device copy + forward/backward/step, CUDA-synchronised so it is real GPU time rather
+    than launch time) and total_s. data_s ~ total_s means the input pipeline is the bottleneck."""
     t = config["train"]
     micro_batch_size = t["micro_batch_size"]
     accum_steps = t["accum_steps"]
     use_amp = t.get("amp", True) and device.type == "cuda"
+    sync = torch.cuda.synchronize if device.type == "cuda" else (lambda: None)
 
     model.train()
     optimizer.zero_grad(set_to_none=True)
     running_loss, n_micro, micro_step = 0.0, 0, 0
+    data_s = gpu_s = 0.0
+    t_epoch = time.perf_counter()
 
-    for batch in loader:
+    batches = iter(loader)
+    while True:
+        t0 = time.perf_counter()
+        batch = next(batches, None)
+        data_s += time.perf_counter() - t0
+        if batch is None:
+            break
+        t0 = time.perf_counter()
         for images, labels in _micro_batches(batch, micro_batch_size):
-            images, labels = images.to(device), labels.to(device)
+            images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
             with autocast(device_type=device.type, enabled=use_amp):
                 logits = model(images)
                 loss = loss_fn(logits, labels) / accum_steps
@@ -227,6 +263,8 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scaler, device, config) -
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
+        sync()
+        gpu_s += time.perf_counter() - t0
 
     if micro_step % accum_steps != 0:
         # leftover partial accumulation window at epoch end -- still apply it
@@ -235,6 +273,9 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scaler, device, config) -
         scaler.update()
         optimizer.zero_grad(set_to_none=True)
 
+    if timing is not None:
+        sync()
+        timing.update(data_s=data_s, gpu_s=gpu_s, total_s=time.perf_counter() - t_epoch)
     return running_loss / max(n_micro, 1)
 
 
@@ -372,12 +413,7 @@ def train(config: dict, resume: bool) -> None:
     if len(datasets["train"]) == 0:
         raise SystemExit("train split is empty -- check the split file / config")
 
-    loader = MonaiDataLoader(
-        datasets["train"],
-        batch_size=config["train"]["loader_batch_size"],
-        shuffle=True,
-        num_workers=config["train"].get("num_workers", 0),
-    )
+    loader = build_train_loader(datasets["train"], config, device)
 
     model = build_model(config).to(device)
     loss_fn = build_loss(config)
@@ -411,13 +447,21 @@ def train(config: dict, resume: bool) -> None:
     val_every = config["train"].get("val_every", 1)
 
     for epoch in range(start_epoch, n_epochs + 1):
-        t0 = time.time()
-        train_loss = train_one_epoch(model, loader, loss_fn, optimizer, scaler, device, config)
+        if hasattr(datasets["train"], "set_epoch"):
+            datasets["train"].set_epoch(epoch)
+        timing: dict = {}
+        train_loss = train_one_epoch(model, loader, loss_fn, optimizer, scaler, device, config, timing)
         if scheduler is not None:
             scheduler.step()
-        msg = f"epoch {epoch}/{n_epochs}  train_loss={train_loss:.4f}  ({time.time() - t0:.1f}s)"
+        msg = (f"epoch {epoch}/{n_epochs}  train_loss={train_loss:.4f}  "
+               f"(data {timing['data_s']:.1f}s, gpu {timing['gpu_s']:.1f}s, total {timing['total_s']:.1f}s)")
+        target_s = config["train"].get("target_epoch_s", 90)
+        if timing["total_s"] > target_s:
+            bound = "data loading" if timing["data_s"] >= timing["gpu_s"] else "GPU compute"
+            msg += f"  ! over the {target_s}s target; bottleneck: {bound}"
 
-        log = {"epoch": epoch, "train_loss": train_loss, "lr": optimizer.param_groups[0]["lr"]}
+        log = {"epoch": epoch, "train_loss": train_loss, "lr": optimizer.param_groups[0]["lr"],
+               "time_data_s": timing["data_s"], "time_gpu_s": timing["gpu_s"], "time_total_s": timing["total_s"]}
         is_best = False
         if epoch % val_every == 0 or epoch == n_epochs:
             metrics = validate(model, datasets["val"], loss_fn, device, config)

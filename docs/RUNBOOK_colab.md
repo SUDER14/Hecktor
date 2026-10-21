@@ -17,7 +17,20 @@ Notebook: `notebooks/colab_train_baseline.ipynb`. Config: `configs/train_baselin
 3. Run all cells. Check the first lines of the launch output:
    - `device: cuda`
    - `git commit: <40-hex>  dirty: False` -- if it says `dirty: True` or `None`, the run is not traceable; fix before running anything you intend to report.
-4. **Do a 2-epoch timing check first**, with a *different* `RUN_NAME` (e.g. `timing_check`) and `EXTRA_OVERRIDES = ['train.n_epochs=2']`. A different name matters: otherwise the real run would later resume from the timing run's checkpoints. Read the `(NNN.Ns)` per-epoch time from the log. Epoch time has **not been measured yet**; this is how you get the number.
+4. **Do a 2-epoch timing check first**, with a *different* `RUN_NAME` (e.g. `timing_check`) and `EXTRA_OVERRIDES = ['train.n_epochs=2']`. A different name matters: otherwise the real run would later resume from the timing run's checkpoints. Read the `(data Xs, gpu Ys, total Zs)` per-epoch breakdown from the log. The cached-pipeline epoch time has **not been measured yet**; this is how you get the number.
+
+## Build the preprocessing cache (once per Colab VM, before training)
+
+The production config reads `cache.dir` (`cache/decathlon_lung_1mm`, local disk) and **refuses to start without it**. A 2-epoch probe of the old uncached pipeline on a T4 with data read from Drive took 695 s/epoch; the cache removes load + resample from the training loop. The cache lives on the VM's local disk, so rebuild it after any runtime reset (the script skips valid entries, so rerunning after a crash is safe). Copy the data off Drive first -- reading volumes from Drive during the build is slow:
+
+```
+!cp -r /content/drive/MyDrive/hecktor_major_project/data/Task06_Lung /content/Task06_Lung
+!python scripts/precompute_cache.py --config configs/train_baseline_decathlon_lung.yaml --data_dir /content/Task06_Lung --cache_dir cache/decathlon_lung_1mm
+```
+
+Expected size from the NIfTI headers: ~9.6 GB at the default float16 (16.0 GB with `--image_dtype float32`); float16 quantises the CT window by up to ~0.68 HU. Build time on Colab: NOT RUN (locally one 512x512x112 volume spent ~65 s of ~75 s in the resample step). The notebook (`notebooks/colab_train_baseline.ipynb`) has **not** been updated with this cell -- run it manually before the training cell.
+
+Each epoch now logs `(data Xs, gpu Ys, total Zs)`, and flags `bottleneck: data loading|GPU compute` when total exceeds 90 s (`train.target_epoch_s`). The 90 s target is **not yet measured on Colab**.
 
 ## Resume after a session dies
 
@@ -39,4 +52,5 @@ Drive holds `checkpoints/<RUN_NAME>/`: `epoch_*.pt` (last 3), `best.pt` (best va
 
 - **RAM.** The production config resamples to 1 mm isotropic; on an 8 GB local machine that ran out of memory, which is why the smoke-test config uses 2 mm. Colab RAM may or may not suffice; watch the RAM gauge on the first epoch. Bump to a high-RAM runtime if it dies.
 - **The overfit-one-batch smoke test has passed only at CPU smoke scale** (`configs/cpu_smoke.yaml`: 32³ patch, 2 mm grid, one crop; fg Dice 0.9187 at iter 55) -- a pipeline check, not evidence about the production 96³ / 1 mm config. On the GPU, run it once first (`!python -m src.training.train --config $CONFIG --overfit-one-batch`) and read the result before a long run.
-- **Data loading is uncached** and single-process (`num_workers: 0`): every epoch re-reads and re-resamples 45 volumes, so epoch time may be CPU-bound, not GPU-bound. Measure before tuning.
+- **Cached-pipeline epoch time is unmeasured.** The old uncached path took 695 s/epoch (45 train volumes, 96^3, T4, Drive). Whether the cache reaches the 90 s target is unknown until the 2-epoch timing check; the per-epoch breakdown names the bottleneck if it does not. Validation still reads whole volumes (`val_every: 5`) and runs the CPU HD95 -- not included in the per-epoch training time.
+- **Resume reproducibility:** cached crops are a pure function of (seed, epoch, volume), so resumed runs redraw the same crops. Cached and uncached runs draw different crops from the same seed, so their numbers are not bit-comparable.

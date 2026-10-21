@@ -75,7 +75,10 @@ train:
   micro_batch_size: 2             # patches per forward/backward pass (physical, VRAM-bound)
   accum_steps: 4                  # effective batch = micro_batch_size * accum_steps = 8, per CLAUDE.md
   sw_batch_size: 1                 # sliding-window inference batch size at validation
-  num_workers: 0
+  num_workers: auto             # int, or auto = os.cpu_count(); workers persist across epochs
+
+cache:
+  dir: /kaggle/temp/cache/decathlon_lung_1mm   # KAGGLE: scratch disk (path unverified); /kaggle/working would be saved as notebook output
 
 scheduler:
   name: cosine                  # cosine | none -- "none" holds train.lr constant

@@ -68,12 +68,13 @@ import yaml
 from monai.data import DataLoader as MonaiDataLoader
 from monai.inferers import SlidingWindowInferer
 from monai.losses import DiceCELoss
-from monai.metrics import DiceMetric, compute_hausdorff_distance
+from monai.metrics import DiceMetric
 from monai.networks.utils import one_hot
 from torch.amp import GradScaler, autocast
 
 from src.data.dataset import build_monai_datasets, load_config
 from src.data.seed import seed_everything
+from src.eval.metrics import hd95 as hd95_mm
 from src.data.transforms import build_baseline_train_transforms, build_baseline_val_transforms
 from src.models.baselines import build_baseline_unet
 from src.training.checkpoint import (
@@ -248,14 +249,14 @@ def validate(model, val_dataset, loss_fn, device, config) -> dict:
     1.0mm) keeps this correct if resample_spacing ever changes.
 
     HD95 APPROACH (keep identical across all runs, or HD95 is not comparable):
-    full-resolution, no downsampling. torch.quantile() inside MONAI's HD95
-    has a ~16M-element limit, which full-volume surface-distance tensors can
-    exceed ("quantile() input tensor is too large"). Rather than downsample,
-    the call is guarded per sample: a failing sample gets HD95 = NaN with a
-    warning, and the reported "hd95" is the nanmean over the samples that
-    succeeded. "hd95_n_failed" says how many were excluded, so a mean over
-    fewer samples is never mistaken for a mean over all of them. Dice is
-    unaffected. (Downsampling before HD95 was considered and not used.)"""
+    src/eval/metrics.py's hd95() -- numpy/scipy on CPU at full resolution, no
+    downsampling (MONAI's torch.quantile version fails with "input tensor is
+    too large" on full volumes). Per sample, the foreground classes' HD95s are
+    averaged. An empty label gives NaN and is excluded from the mean
+    ("hd95_n_failed" counts those). An empty prediction against a non-empty
+    label gets the documented penalty (the volume's physical diagonal), stays
+    in the mean, and is counted in "hd95_n_empty_pred" so a mean that includes
+    penalties is never mistaken for a mean of real distances."""
     model.eval()
     roi_size = config["patch"]["spatial_size"]
     sw_batch_size = config["train"].get("sw_batch_size", 1)
@@ -264,7 +265,7 @@ def validate(model, val_dataset, loss_fn, device, config) -> dict:
     inferer = SlidingWindowInferer(roi_size=roi_size, sw_batch_size=sw_batch_size)
     dice_metric = DiceMetric(include_background=False, reduction="mean")
 
-    losses, hd95_per_sample = [], []
+    losses, hd95_per_sample, n_empty_pred = [], [], 0
     for item in val_dataset:
         image = item["image"].unsqueeze(0).to(device)
         label = item["label"].unsqueeze(0).to(device)
@@ -274,13 +275,12 @@ def validate(model, val_dataset, loss_fn, device, config) -> dict:
         pred = torch.argmax(torch.softmax(logits, dim=1), dim=1, keepdim=True)
         pred_oh, label_oh = one_hot(pred, n_classes), one_hot(label, n_classes)
         dice_metric(y_pred=pred_oh, y=label_oh)
-        try:
-            hd95 = compute_hausdorff_distance(
-                pred_oh, label_oh, include_background=False, percentile=95, spacing=spacing
-            ).nanmean().item()
-        except RuntimeError as exc:  # torch.quantile size limit on full-res volumes
-            print(f"  ! HD95 failed for a validation sample, recording NaN: {exc}")
-            hd95 = float("nan")
+        pred_np = pred.squeeze(0).squeeze(0).cpu().numpy()
+        label_np = label.squeeze(0).squeeze(0).cpu().numpy()
+        per_class = [hd95_mm(pred_np == c, label_np == c, spacing) for c in range(1, n_classes)]
+        values = [r.value for r in per_class if not math.isnan(r.value)]
+        hd95 = sum(values) / len(values) if values else float("nan")
+        n_empty_pred += any(r.pred_empty for r in per_class)
         hd95_per_sample.append(hd95)
 
     mean_dice = dice_metric.aggregate().item()
@@ -292,6 +292,7 @@ def validate(model, val_dataset, loss_fn, device, config) -> dict:
         "dice": mean_dice,
         "hd95": mean_hd95,
         "hd95_n_failed": len(hd95_per_sample) - len(valid_hd95),
+        "hd95_n_empty_pred": n_empty_pred,
     }
 
 
@@ -424,7 +425,8 @@ def train(config: dict, resume: bool) -> None:
             best_dice = max(best_dice, metrics["dice"])
             msg += f"  val_loss={metrics['loss']:.4f}  val_dice={metrics['dice']:.4f}  val_hd95={metrics['hd95']:.4f}"
             log.update({"val_loss": metrics["loss"], "val_dice": metrics["dice"], "val_hd95": metrics["hd95"],
-                        "val_hd95_n_failed": metrics["hd95_n_failed"]})
+                        "val_hd95_n_failed": metrics["hd95_n_failed"],
+                        "val_hd95_n_empty_pred": metrics["hd95_n_empty_pred"]})
         print(msg)
 
         if wandb_mod is not None:

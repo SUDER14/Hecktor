@@ -3,10 +3,10 @@
 # against real HECKTOR data; see HecktorAdapter's docstring in src/data/adapters.py.
 # Do not run this for real until access lands and the adapter has been re-checked.
 #
-# Also unresolved as of this config: build_monai_datasets() only supports
-# single-modality data today. HECKTOR is dual-modality (CT+PT); joint sampling
-# needs the resolution-asymmetric crop-alignment design flagged in
-# src/data/dataset.py before this config can drive actual training.
+# HECKTOR (CT+PT) goes through build_dual_modality_datasets(), which crops both
+# modalities in world coordinates (src/data/physical_crop.py); build_monai_datasets()
+# stays single-modality. patch.spatial_size is the CT patch in voxels; the PET
+# patch size is derived from its physical extent. Untested on real HECKTOR data.
 
 seed: 42
 

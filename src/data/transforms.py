@@ -128,3 +128,40 @@ def build_baseline_val_transforms(modality: str, config: dict) -> Compose:
     """No cropping: validation runs on the full resampled volume (sliding-window
     inference happens in the training loop, not here)."""
     return Compose(build_baseline_load_transforms(modality, config))
+
+
+# ----------------------------------------------------------------------------
+# Dual-modality (HECKTOR CT+PT) pipeline
+# ----------------------------------------------------------------------------
+# Native resolution, no resampling. CT and PT keep their own grids and are cut
+# by RandPhysicalCropd in world coordinates (src/data/physical_crop.py), because
+# a shared-index crop like RandCropByPosNegLabeld would misalign them.
+
+
+def build_dual_load_transforms(config: dict) -> list:
+    w = config["intensity"]["ct_window"]
+    suv_max = config["intensity"]["pet"]["suv_clip_max"]  # ASSUMES SUV units -- see module docstring
+    keys = ["ct", "pet", "label"]
+    return [
+        LoadImaged(keys=keys),
+        EnsureChannelFirstd(keys=keys),
+        Orientationd(keys=keys, axcodes="RAS"),
+        ScaleIntensityRanged(keys=["ct"], a_min=w["min"], a_max=w["max"], b_min=0.0, b_max=1.0, clip=True),
+        ScaleIntensityRanged(keys=["pet"], a_min=0.0, a_max=suv_max, b_min=0.0, b_max=1.0, clip=True),
+    ]
+
+
+def build_dual_train_transforms(config: dict) -> Compose:
+    from src.data.physical_crop import RandPhysicalCropd
+
+    patch = config["patch"]
+    return Compose(build_dual_load_transforms(config) + [
+        RandPhysicalCropd("ct", "pet", "label", patch["spatial_size"], pos=patch["pos"],
+                          neg=patch["neg"], num_samples=patch["num_samples"],
+                          tol_voxels=patch.get("extent_tol_voxels", 1.0)),
+    ])
+
+
+def build_dual_val_transforms(config: dict) -> Compose:
+    """Full native-resolution volumes, no cropping (sliding window is the loop's job)."""
+    return Compose(build_dual_load_transforms(config))

@@ -15,6 +15,10 @@ aligned crop across two different native grids without resampling is an open
 part of the ACF design, not something solved here. Do not wire a dual-input
 training loop against this module's per-modality Dataset until that's
 designed -- it will silently crop CT and PT at mismatched physical locations.
+
+build_dual_modality_datasets() below is the HECKTOR path: it keeps CT and PT
+together per patient and crops them in world coordinates (physical_crop.py).
+build_monai_datasets() is the unchanged single-modality (Decathlon) path.
 """
 
 from __future__ import annotations
@@ -38,7 +42,12 @@ from src.data.splits import (
     random_split,
     save_split,
 )
-from src.data.transforms import build_train_transforms, build_val_transforms
+from src.data.transforms import (
+    build_dual_train_transforms,
+    build_dual_val_transforms,
+    build_train_transforms,
+    build_val_transforms,
+)
 
 ADAPTERS: dict[str, type[SegmentationDataset]] = {
     "decathlon": DecathlonAdapter,
@@ -147,8 +156,7 @@ def build_monai_datasets(
         raise NotImplementedError(
             f"build_monai_datasets() only supports single-modality data; found "
             f"{modalities}. Multi-modality (HECKTOR) joint sampling needs the "
-            "resolution-asymmetric crop-alignment design called out in this "
-            "module's docstring before it can be wired up."
+            "physical-coordinate crop in build_dual_modality_datasets()."
         )
     modality = next(iter(modalities))
 
@@ -160,5 +168,30 @@ def build_monai_datasets(
             if split_name == "train"
             else val_transform_fn(modality, config)
         )
+        datasets[split_name] = MonaiDataset(data=items, transform=transform)
+    return datasets
+
+
+def build_dual_modality_datasets(config: dict) -> dict[str, MonaiDataset]:
+    """One item per patient with CT and PT paths side by side. Train items come
+    out of RandPhysicalCropd as patches that start at the same world position;
+    val/test items are full native-resolution volumes. Requires every patient to
+    have both modalities -- a missing one is an error, not a silent skip."""
+    all_samples = build_samples(config)
+    datasets = {}
+    for split_name, samples in all_samples.items():
+        items = []
+        for s in samples:
+            if not {"CT", "PT"} <= set(s["modalities"]):
+                raise ValueError(f"{s['patient_id']}: need both CT and PT, found {s['modalities']}")
+            paths = dict(zip(s["modalities"], s["image"]))
+            items.append({
+                "ct": paths["CT"], "pet": paths["PT"], "label": s["label"],
+                "patient_id": s["patient_id"], "centre": s["centre"],
+                "cond_ct": s["conditioning"]["CT"], "cond_pet": s["conditioning"]["PT"],
+                "geometry_ct": s["geometry"]["CT"], "geometry_pet": s["geometry"]["PT"],
+            })
+        transform = (build_dual_train_transforms(config) if split_name == "train"
+                     else build_dual_val_transforms(config))
         datasets[split_name] = MonaiDataset(data=items, transform=transform)
     return datasets

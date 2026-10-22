@@ -14,9 +14,15 @@ feature grid before concatenation, so the fusion point is the only place the
 grids need to agree. Output logits live on the CT grid, shape
 (B, out_channels, *ct_spatial), no final activation (the loss applies softmax).
 
-The CT spatial size must be divisible by prod(strides); PET sizes need not be,
-but each PET side must be >= 2*prod(strides) so the deepest level keeps >1 voxel
-(instance norm raises on a single voxel; checked in forward).
+The CT spatial size must be divisible by prod(strides). PET sizes need not be,
+but the PET deepest level must keep >1 voxel per axis (instance norm raises on a
+single voxel). That is computed exactly (stride-2 conv: n -> ceil(n/2)), not by a
+fixed minimum side, so e.g. a 24^3 PET patch is fine.
+
+Whether a PET patch pairs with a CT patch is a physical question, not a voxel
+count one: pass ct_spacing / pet_spacing (mm) to forward() and the two patch
+extents in mm are compared (src/data/geometry.py). Without spacings the check is
+skipped, since the model cannot know them.
 """
 
 from __future__ import annotations
@@ -25,6 +31,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from monai.networks.blocks import UnetOutBlock, UnetResBlock, UnetrUpBlock
+
+from src.data.geometry import check_physical_extent
 
 _NORM = "instance"
 
@@ -47,8 +55,10 @@ class _Encoder(nn.Module):
 
 
 class DualEncoderUNet(nn.Module):
-    def __init__(self, channels, strides, out_channels: int, ct_channels: int = 1, pet_channels: int = 1):
+    def __init__(self, channels, strides, out_channels: int, ct_channels: int = 1, pet_channels: int = 1,
+                 extent_tol_voxels: float = 1.0):
         super().__init__()
+        self.extent_tol_voxels = extent_tol_voxels
         channels, strides = list(channels), list(strides)
         if len(strides) != len(channels) - 1:
             raise ValueError(f"need len(strides) == len(channels) - 1, got {strides} vs {channels}")
@@ -64,14 +74,37 @@ class DualEncoderUNet(nn.Module):
         )
         self.out = UnetOutBlock(3, channels[0], out_channels)
 
-    def forward(self, ct: torch.Tensor, pet: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _per_sample(spacing, batch: int, name: str) -> list[tuple[float, float, float]]:
+        """Accept one (3,) spacing for the whole batch or a (B, 3) tensor/array."""
+        arr = torch.as_tensor(spacing, dtype=torch.float64).reshape(-1, 3)
+        if arr.shape[0] == 1:
+            arr = arr.expand(batch, 3)
+        if arr.shape[0] != batch:
+            raise ValueError(f"{name} has {arr.shape[0]} rows for a batch of {batch}")
+        return [tuple(r) for r in arr.tolist()]
+
+    def forward(self, ct: torch.Tensor, pet: torch.Tensor, ct_spacing=None, pet_spacing=None) -> torch.Tensor:
         total = 1
         for s in self.strides:
             total *= s
         if any(d % total for d in ct.shape[2:]):
             raise ValueError(f"CT spatial size {tuple(ct.shape[2:])} must be divisible by {total}")
-        if any(d < 2 * total for d in pet.shape[2:]):
-            raise ValueError(f"PET spatial size {tuple(pet.shape[2:])} must be >= {2 * total} per side (instance norm needs >1 voxel at the deepest level)")
+        deepest = []
+        for d in pet.shape[2:]:
+            for s in self.strides:
+                d = -(-d // s)  # stride-s, k=3, pad=1 conv: ceil(d / s)
+            deepest.append(d)
+        if any(d < 2 for d in deepest):
+            raise ValueError(f"PET spatial size {tuple(pet.shape[2:])} collapses to {tuple(deepest)} at the deepest level (instance norm needs >1 voxel per axis)")
+        if (ct_spacing is None) != (pet_spacing is None):
+            raise ValueError("pass both ct_spacing and pet_spacing, or neither")
+        if ct_spacing is not None:
+            batch = ct.shape[0]
+            for i, (cs, ps) in enumerate(zip(self._per_sample(ct_spacing, batch, "ct_spacing"),
+                                             self._per_sample(pet_spacing, batch, "pet_spacing"))):
+                check_physical_extent(ct.shape[2:], cs, pet.shape[2:], ps,
+                                      self.extent_tol_voxels, context=f"batch item {i}")
         ct_f, pet_f = self.ct_enc(ct), self.pet_enc(pet)
         fused = []
         for fuse, c, p in zip(self.fuse, ct_f, pet_f):
@@ -86,7 +119,9 @@ class DualEncoderUNet(nn.Module):
 
 def build_dual_encoder_unet(config: dict) -> DualEncoderUNet:
     """Expected config["model"] keys: channels, strides, out_channels, and
-    optionally ct_channels / pet_channels (default 1 each)."""
+    optionally ct_channels / pet_channels (default 1 each) and extent_tol_voxels
+    (CT/PET physical-extent tolerance in coarser voxels, default 1.0)."""
     m = config["model"]
     return DualEncoderUNet(m["channels"], m["strides"], m["out_channels"],
-                           m.get("ct_channels", 1), m.get("pet_channels", 1))
+                           m.get("ct_channels", 1), m.get("pet_channels", 1),
+                           m.get("extent_tol_voxels", 1.0))

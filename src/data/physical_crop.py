@@ -65,9 +65,28 @@ def feasible_start_edges(grid: Grid, n_vox, name: str = "volume") -> tuple[np.nd
     return grid.start_edge(0), grid.start_edge(np.asarray(grid.shape) - n)
 
 
-def snap_start_index(grid: Grid, start_edge_mm, n_vox) -> np.ndarray:
+def snap_start_index(grid: Grid, start_edge_mm, n_vox, clip: bool = True) -> np.ndarray:
     idx = np.rint((np.asarray(start_edge_mm) - grid.start_edge(0)) / grid.spacing).astype(int)
-    return np.clip(idx, 0, np.asarray(grid.shape) - np.asarray(n_vox))
+    return np.clip(idx, 0, np.asarray(grid.shape) - np.asarray(n_vox)) if clip else idx
+
+
+def extract_padded(arr: np.ndarray, idx, n_vox) -> np.ndarray:
+    """arr[..., idx:idx+n] where indices outside the volume read as 0.
+
+    Padding keeps world positions: output voxel j sits at source voxel idx+j, so a
+    pad voxel is exactly where the grid would continue. 0 is air for a CT scaled
+    to [0, 1] with a -1000 HU floor, zero uptake for PET, and background for the
+    label."""
+    out = np.zeros(arr.shape[:-3] + tuple(int(v) for v in n_vox), dtype=arr.dtype)
+    src, dst = [], []
+    for i0, n, size in zip(idx, n_vox, arr.shape[-3:]):
+        a, b = max(int(i0), 0), min(int(i0) + int(n), size)
+        if b <= a:
+            raise ValueError("padded window does not overlap the volume at all")
+        src.append(slice(a, b))
+        dst.append(slice(a - int(i0), b - int(i0)))
+    out[(...,) + tuple(dst)] = arr[(...,) + tuple(src)]
+    return out
 
 
 def physical_crop(
@@ -76,6 +95,7 @@ def physical_crop(
     reference_voxels,
     centre_mm,
     tol_voxels: float = 1.0,
+    pad: bool = False,
 ) -> tuple[dict[str, np.ndarray], dict]:
     """Crop every volume to the physical window of the `reference` patch.
 
@@ -86,6 +106,11 @@ def physical_crop(
     centre_mm: desired patch centre in world mm; clamped, jointly for all
     volumes, so every window stays inside every volume (clamping per volume
     would shift one window away from the others).
+
+    pad=False (default): a window that cannot fit inside every volume is an error.
+    pad=True: on an axis where it cannot fit, the window is centred on the overlap
+    of the fields of view and out-of-volume voxels read as 0 (extract_padded), so
+    small or offset scans still yield full-size, world-consistent patches.
 
     Returns (patches, info) with info["voxels"/"start_idx"/"start_mm"/"spacing"]
     keyed by volume name.
@@ -102,9 +127,21 @@ def physical_crop(
 
     lo = np.full(3, -np.inf)
     hi = np.full(3, np.inf)
+    fov_lo, fov_hi = np.full(3, -np.inf), np.full(3, np.inf)
     for n, g in grids.items():
-        l, h = feasible_start_edges(g, voxels[n], n)
+        if pad:
+            l, h = g.start_edge(0), g.start_edge(np.asarray(g.shape) - np.asarray(voxels[n]))
+            fov_lo = np.maximum(fov_lo, g.start_edge(0))
+            fov_hi = np.minimum(fov_hi, g.start_edge(np.asarray(g.shape)))
+        else:
+            l, h = feasible_start_edges(g, voxels[n], n)
         lo, hi = np.maximum(lo, l), np.minimum(hi, h)
+    if pad:
+        if (fov_lo >= fov_hi).any():
+            raise ValueError("no common physical window: the fields of view do not overlap")
+        centred = (fov_lo + fov_hi) / 2.0 - extent / 2.0
+        too_big = lo > hi  # window larger than the common FOV on this axis
+        lo, hi = np.where(too_big, centred, lo), np.where(too_big, centred, hi)
     if (lo > hi).any():
         raise ValueError(
             f"no common physical window of {np.round(extent, 1).tolist()} mm fits inside all "
@@ -115,9 +152,12 @@ def physical_crop(
     patches, info = {}, {"voxels": {}, "start_idx": {}, "start_mm": {}, "spacing": {}}
     for n, (arr, _) in volumes.items():
         g = grids[n]
-        idx = snap_start_index(g, start, voxels[n])
-        sl = tuple(slice(int(i), int(i + v)) for i, v in zip(idx, voxels[n]))
-        patches[n] = arr[(...,) + sl]
+        idx = snap_start_index(g, start, voxels[n], clip=not pad)
+        if pad:
+            patches[n] = extract_padded(arr, idx, voxels[n])
+        else:
+            sl = tuple(slice(int(i), int(i + v)) for i, v in zip(idx, voxels[n]))
+            patches[n] = arr[(...,) + sl]
         info["voxels"][n], info["start_idx"][n] = voxels[n], idx
         info["start_mm"][n], info["spacing"][n] = g.start_edge(idx), g.spacing
     return patches, info

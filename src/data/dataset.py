@@ -29,6 +29,7 @@ import yaml
 from monai.data import Dataset as MonaiDataset
 
 from src.data.adapters import DecathlonAdapter, HecktorAdapter, SegmentationDataset
+from src.data.hecktor2026 import Hecktor2026Adapter
 from src.data.conditioning import (
     attach_conditioning_vectors,
     fit_conditioning_stats,
@@ -52,6 +53,7 @@ from src.data.transforms import (
 ADAPTERS: dict[str, type[SegmentationDataset]] = {
     "decathlon": DecathlonAdapter,
     "hecktor": HecktorAdapter,
+    "hecktor2026": Hecktor2026Adapter,
 }
 
 
@@ -79,7 +81,8 @@ def _build_or_load_split(samples: list[dict], config: dict) -> dict[str, list[st
     else:
         raise ValueError(f"unknown split strategy {strategy!r}")
 
-    save_split(split, split_path)
+    save_split(split, split_path, meta={"seed": config["seed"], "strategy": strategy,
+                                        "test_centres": config["split"].get("test_centres")})
     return split
 
 

@@ -39,6 +39,18 @@ def random_split(samples: list[dict], val_frac: float, test_frac: float,
     }
 
 
+TINY_CENTRES = ("HMR", "USZ")  # too few patients for a test set on their own
+
+
+def check_test_centres(samples: list[dict], test_centres, tiny_centres=TINY_CENTRES) -> None:
+    """A test set made only of tiny centres gives per-centre statistics too noisy to
+    interpret, so refuse it; tiny centres may be added next to a larger one."""
+    tc = {c.upper() for c in test_centres}
+    if tc and tc <= {c.upper() for c in tiny_centres}:
+        raise ValueError(f"test_centres {sorted(tc)} are all tiny centres {sorted(tiny_centres)}; "
+                         "add at least one larger centre to the held-out set")
+
+
 def group_split_by_centre(samples: list[dict], test_centres: list[str],
                            val_frac: float, seed: int) -> dict[str, list[str]]:
     """Held-out-centre split: `test_centres` are entirely excluded from
@@ -46,6 +58,7 @@ def group_split_by_centre(samples: list[dict], test_centres: list[str],
     further split into train/val by centre (GroupShuffleSplit), so a centre
     never straddles train and val either.
     """
+    check_test_centres(samples, test_centres)
     test_centres = set(test_centres)
     unknown = test_centres - {s["centre"] for s in samples}
     if unknown:
@@ -87,11 +100,12 @@ def group_split_by_centre(samples: list[dict], test_centres: list[str],
     }
 
 
-def save_split(split: dict[str, list[str]], path: str | Path) -> None:
+def save_split(split: dict[str, list[str]], path: str | Path, meta: dict | None = None) -> None:
+    """`meta` (e.g. seed, strategy, test centres) is stored under "_meta"; apply_split ignores it."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
-        json.dump(split, f, indent=2)
+        json.dump({**split, **({"_meta": meta} if meta else {})}, f, indent=2)
 
 
 def load_split(path: str | Path) -> dict[str, list[str]]:
@@ -103,6 +117,8 @@ def apply_split(samples: list[dict], split: dict[str, list[str]]) -> dict[str, l
     by_id = {s["patient_id"]: s for s in samples}
     out = {}
     for subset, ids in split.items():
+        if subset.startswith("_"):  # metadata such as "_meta" (seed, strategy), not a subset
+            continue
         missing = [i for i in ids if i not in by_id]
         if missing:
             raise KeyError(f"split references patient_ids not in samples: {missing}")

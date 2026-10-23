@@ -1,0 +1,35 @@
+# Synthetic PET/CT cohort (src/data/synthetic.py), native spacing. Pipeline check only.
+seed: 42
+smoke_only: true
+dataset: hecktor2026
+data_dir: data/synthetic_hecktor2026
+
+split:
+  strategy: group_by_centre
+  test_centres: [MDA]
+  val_frac: 0.2
+  path: results/synth/split.json
+
+conditioning:
+  stats_path: results/synth/cond_stats.json
+
+data:
+  mode: native
+cache:
+  dir: results/synth/cache_native
+  dtype: float32
+
+# 64 mm box: 64^3 CT voxels at 1 mm, 16^3 PET voxels at 4 mm
+patch:
+  spatial_size: [64, 64, 64]
+  pos: 2
+  neg: 1
+  num_samples: 2
+  extent_tol_voxels: 1.0
+
+intensity:
+  ct_window: {min: -1000, max: 400}
+  pet: {suv_clip_max: 10.0}
+
+baseline:
+  resample_spacing: [2.0, 2.0, 2.0]

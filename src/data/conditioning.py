@@ -104,3 +104,19 @@ def attach_conditioning_vectors(samples: list[dict], stats: dict) -> list[dict]:
         s["geometry"] = geom
         out.append(s)
     return out
+
+
+COND4_DIM = 4  # [sx, sy, sz, modality_flag]; CT flag 0, PET flag 1
+
+
+def to_cond4(vec5: np.ndarray) -> np.ndarray:
+    """Collapse the legacy [sx, sy, sz, is_CT, is_PT] vector to [sx, sy, sz, flag].
+
+    The two one-hot entries carry one bit between them, so the 4-d form loses
+    nothing. sx, sy, sz stay z-scored with the TRAIN-ONLY per-modality stats; the
+    flag is left raw (0/1) because z-scoring a constant per-encoder flag is moot.
+    """
+    v = np.asarray(vec5, dtype=np.float32)
+    if v.shape != (5,) or v[3] + v[4] != 1.0:
+        raise ValueError(f"expected a legacy 5-d one-hot conditioning vector, got {v}")
+    return np.array([v[0], v[1], v[2], v[4]], dtype=np.float32)

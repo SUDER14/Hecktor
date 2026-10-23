@@ -12,7 +12,6 @@ new spacing), prediction is resampled back and scored against the unchanged nati
 
 from __future__ import annotations
 
-import math
 import time
 from pathlib import Path
 

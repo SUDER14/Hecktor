@@ -12,7 +12,6 @@ import argparse
 import json
 from pathlib import Path
 
-import torch
 
 from src.data.dataset import load_config
 from src.training.checkpoint import load_checkpoint

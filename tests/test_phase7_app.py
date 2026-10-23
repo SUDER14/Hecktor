@@ -1,7 +1,6 @@
 """Viewer core + Streamlit page, on synthetic data, no GPU."""
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from app import viewer_core as vc

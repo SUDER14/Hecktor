@@ -38,10 +38,13 @@ Segmentation Decathlon**, which is freely downloadable and has real spacing vari
 - [x] Read-only local data-exploration dashboard (`frontend/`, Streamlit;
       `streamlit run frontend/app.py --server.address localhost`). Training-progress
       page is a "no runs yet" stub until Colab runs exist.
-- [ ] Dual-encoder baseline
-- [ ] Hypernetwork + FiLM
-- [ ] Evidential head + calibration
+- [x] Dual-encoder baseline (B2), ACF with per-modality FiLM hypernetworks, evidential head, losses and metrics —
+      code + unit tests + CPU smoke test only (synthetic data); **never trained on a GPU, no results**
+- [x] Config-driven trainer, native sliding-window inference, E1-E6 scripts, nnU-Net scripts, Kaggle/Colab runners,
+      Streamlit viewer (`app/`), learning docs (`docs/learn/`) — see `docs/FINAL_REPORT.md` for VERIFIED / NOT VERIFIED
+- [ ] GPU runs of B1-B5 and E1-E6 on real data
 - [ ] HECKTOR access
+- [ ] Systematic prior-art search (HyperSpace, Consispace arXiv:2606.31839, Diaz et al. arXiv:2503.21829 known)
 
 ---
 

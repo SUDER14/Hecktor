@@ -120,3 +120,14 @@ def to_cond4(vec5: np.ndarray) -> np.ndarray:
     if v.shape != (5,) or v[3] + v[4] != 1.0:
         raise ValueError(f"expected a legacy 5-d one-hot conditioning vector, got {v}")
     return np.array([v[0], v[1], v[2], v[4]], dtype=np.float32)
+
+
+def make_cond4(spacing, modality: str, stats: dict) -> np.ndarray:
+    """[sx, sy, sz, flag] for an arbitrary spacing (mm), z-scored with the TRAIN stats.
+
+    Used where the spacing is changed after the fact (anisotropy-degradation
+    experiment), so the conditioning vector must follow the data it describes.
+    """
+    m = stats[modality]
+    z = [(float(s) - m[f]["mean"]) / m[f]["std"] for s, f in zip(spacing, COND_FEATURES)]
+    return np.array(z + [1.0 if modality in ("PT", "PET") else 0.0], dtype=np.float32)

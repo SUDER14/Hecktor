@@ -1,0 +1,80 @@
+# B1: CT-only 3D U-Net, resampled to 1 mm
+# Placeholders to confirm once real data is available: split.test_centres, intensity.pet.suv_clip_max (SUV assumed).
+# loader_batch_size * patch.num_samples must be divisible by train.micro_batch_size; effective batch = micro * accum = 8.
+seed: 42
+dataset: hecktor2026
+data_dir: data/hecktor2026_training
+split:
+  strategy: group_by_centre
+  test_centres:
+  - MDA
+  val_frac: 0.2
+  path: configs/splits/hecktor2026_seed42.json
+conditioning:
+  stats_path: configs/splits/hecktor2026_seed42_conditioning_stats.json
+data:
+  mode: resampled
+cache:
+  dir: /tmp/acf_cache_resampled
+  dtype: float16
+patch:
+  spatial_size:
+  - 96
+  - 96
+  - 96
+  pos: 2
+  neg: 1
+  num_samples: 2
+  extent_tol_voxels: 1.0
+intensity:
+  ct_window:
+    min: -1000
+    max: 400
+  pet:
+    suv_clip_max: 20.0
+baseline:
+  resample_spacing:
+  - 1.0
+  - 1.0
+  - 1.0
+model:
+  name: unet3d
+  channels:
+  - 16
+  - 32
+  - 64
+  - 128
+  - 256
+  strides:
+  - 2
+  - 2
+  - 2
+  - 2
+  out_channels: 2
+loss:
+  smooth: 1.0
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  kl_anneal_epochs: 10
+  dice_weight: 1.0
+train:
+  n_epochs: 100
+  lr: 0.0003
+  weight_decay: 0.01
+  micro_batch_size: 2
+  accum_steps: 4
+  loader_batch_size: 1
+  amp: true
+  num_workers: 2
+  val_every: 5
+  device: auto
+scheduler:
+  name: cosine
+  eta_min: 1.0e-06
+checkpoint:
+  keep_last_n: 3
+infer:
+  overlap: 0.5
+  sw_batch_size: 2
+run:
+  dir: runs/b1_unet_resample

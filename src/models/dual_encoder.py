@@ -148,20 +148,20 @@ class DualEncoderUNet(nn.Module):
                                              self._per_sample(pet_spacing, batch, "pet_spacing"))):
                 check_physical_extent(ct.shape[2:], cs, pet.shape[2:], ps,
                                       self.extent_tol_voxels, context=f"batch item {i}")
-        ct_f, pet_f = self.ct_enc(ct), self.pet_enc(pet)
+        ct_f, pet_f = self.ct_enc(ct), self.pet_enc(pet)  # lists of (B, C_i, X/2^i, Y/2^i, Z/2^i) maps (PET list is shorter)
         fused = []
         for i, (fuse, c) in enumerate(zip(self.fuse, ct_f)):
             if i > self.pet_depth:  # no PET feature at this depth
                 fused.append(c)
                 continue
-            p = pet_f[i]
+            p = pet_f[i]  # (B, C_i, x/2^i, y/2^i, z/2^i): PET map at the same level index
             if p.shape[2:] != c.shape[2:]:
-                p = F.interpolate(p, size=c.shape[2:], mode="trilinear", align_corners=False)
-            fused.append(fuse(torch.cat([c, p], dim=1)))
-        x = fused[-1]
+                p = F.interpolate(p, size=c.shape[2:], mode="trilinear", align_corners=False)  # -> (B, C_i, X_i, Y_i, Z_i) on the CT grid
+            fused.append(fuse(torch.cat([c, p], dim=1)))  # cat (B, 2*C_i, ...) -> 1x1x1 conv -> (B, C_i, X_i, Y_i, Z_i)
+        x = fused[-1]  # (B, C_last, X/2^last, ...) bottleneck
         for i in reversed(range(len(self.ups))):
-            x = self.ups[i](x, fused[i])
-        return self.out(x)
+            x = self.ups[i](x, fused[i])  # upsample to level i grid, concat skip, res block -> (B, C_i, X/2^i, ...)
+        return self.out(x)  # (B, C_0, X, Y, Z) -> (B, K, X, Y, Z) logits
 
 
 def build_dual_encoder_unet(config: dict) -> DualEncoderUNet:

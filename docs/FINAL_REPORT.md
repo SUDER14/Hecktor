@@ -30,6 +30,8 @@ shown by the `git ls-remote` proof at the end of the session and equals local HE
 | CT/PET crops cover the same physical box (96 mm = 96^3 CT / 24^3 PET) | VERIFIED on synthetic data | `tests/test_phase1_data.py`, `test_physical_crop.py`, `ACF.level_table` |
 | FiLM is identity at init; gradient reaches both hypernetworks; zeroed-conditioning ACF matches B2 structure | VERIFIED | `tests/test_phase2_models.py` |
 | Parameter counts: B1 5,730,274; B2 9,481,362; B3/B4/B5 6,229,986 | VERIFIED | instantiated from the committed configs |
+| B2b (`configs/b2b_dual_matched.yaml`, widths 12/28/52/104/208) has 6,277,406 params, +0.76% vs ACF (within 3%) | VERIFIED | `tests/test_param_matched.py` (instantiated from configs; fails if drift exceeds 3%) |
+| `scripts/make_synthetic_cohort.py --synthetic_production` yields 96^3 CT (1 mm) / 24^3 PET (4 mm) training items | VERIFIED (shapes only) | one item loaded through `build_dual_datasets`; no timing or VRAM measured |
 | Streamlit app runs headless on synthetic data | VERIFIED | `tests/test_phase7_app.py` (Streamlit AppTest) and rendered PNGs viewed |
 | E1-E6 scripts run end to end | VERIFIED on untrained smoke models only | outputs are meaningless numbers and are not reported |
 | Any Dice / HD95 / ECE / speed / VRAM figure for real data | **NOT VERIFIED (none exist)** | no real data, no GPU |
@@ -43,7 +45,7 @@ shown by the `git ls-remote` proof at the end of the session and equals local HE
 
 ## NOT RUN
 
-GPU training of B1-B5 at 96^3; E1-E6 on real checkpoints; nnU-Net training/prediction; Kaggle and Colab runners;
+GPU training of B1-B5 and B2b at 96^3; E1-E6 on real checkpoints; nnU-Net training/prediction; Kaggle and Colab runners;
 HECKTOR spacing manifest; peak-VRAM measurement (E3 writes "not measured" without CUDA).
 
 ## Exact commands to run next (Kaggle or Colab GPU)
@@ -57,10 +59,10 @@ python scripts/spacing_manifest.py --data_dir /tmp/hecktor2026_training --out re
 python -m src.training.run --config configs/b4_acf_cond.yaml --override data_dir=/tmp/hecktor2026_training \
     --override run.dir=runs/probe --override train.n_epochs=2 --override train.val_every=1
 # then each config, resumable:
-for c in b1_unet_resample b2_dual_resample b3_acf_zeroed b4_acf_cond b5_acf_evidential; do
+for c in b1_unet_resample b2_dual_resample b2b_dual_matched b3_acf_zeroed b4_acf_cond b5_acf_evidential; do
   python -m src.training.run --config configs/$c.yaml --override data_dir=/tmp/hecktor2026_training --resume; done
-python scripts/run_experiments.py e1 --runs B1=runs/b1_unet_resample B2=runs/b2_dual_resample B3=runs/b3_acf_zeroed \
-    B4=runs/b4_acf_cond B5=runs/b5_acf_evidential --out results/e1 --device cuda
+python scripts/run_experiments.py e1 --runs B1=runs/b1_unet_resample B2=runs/b2_dual_resample B2b=runs/b2b_dual_matched \
+    B3=runs/b3_acf_zeroed B4=runs/b4_acf_cond B5=runs/b5_acf_evidential --out results/e1 --device cuda
 ```
 Before the first real run: confirm `split.test_centres` against the manifest (do not use only HMR/USZ), confirm PET
 units, and check that no HECKTOR affine is oblique (the crop code rejects those).
@@ -76,6 +78,9 @@ units, and check that no HECKTOR affine is oblique (the crop code rejects those)
    (arXiv:2503.21829, resolution-adaptive convolutions, no resampling). A systematic search is still required
    before any novelty statement. No "first"/"novel" claims were written in code or docs.
 4. **Capacity confound.** B2 has about 52% more parameters than ACF (full-depth PET encoder at 1 mm); report counts.
+   B2b (6,277,406 params, +0.76% vs ACF) is the parameter-matched control, but it has never been trained, and it
+   keeps B2's `pet_depth: 4` (deeper PET path than ACF), so matched total parameters do not mean matched architecture.
+   `run_experiments.py` takes free-form `LABEL=run_dir` pairs (read from the source, not run with B2b).
 5. **Single seed, 100-epoch plan unmeasured.** Differences below seed variance mean nothing.
 6. Synthetic anisotropy experiment (E2) is block averaging, not a model of real thick-slice scanners.
 7. Evidential training stability (loss weights, KL annealing length) is untested on real data.

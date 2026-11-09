@@ -106,6 +106,30 @@ def attach_conditioning_vectors(samples: list[dict], stats: dict) -> list[dict]:
     return out
 
 
+COND_DIM = len(COND_FEATURES)  # [sx, sy, sz] of the scan, z-scored with TRAIN-ONLY stats
+
+
+def make_cond(spacing, stats: dict, modality: str = "CT") -> np.ndarray:
+    """[sx, sy, sz] z-scored with the TRAIN stats -- the hypernetwork's input.
+
+    CT and PET share one grid in HECKTOR 2026 (VERIFIED, all 782 cases), so one
+    spacing describes the scan and there is no modality flag. The stats are read
+    from the CT entry, which is the header of that shared grid.
+
+    Also used where the spacing is changed after the fact (anisotropy-degradation
+    experiment): the conditioning vector must follow the data it describes.
+    """
+    m = stats[modality]
+    z = [(float(s) - m[f]["mean"]) / m[f]["std"] for s, f in zip(spacing, COND_FEATURES)]
+    return np.array(z, dtype=np.float32)
+
+
+def scan_spacing(sample: dict) -> tuple[float, float, float]:
+    """Raw (sx, sy, sz) in mm from an attached sample's geometry (CT == PET grid)."""
+    g = sample["geometry"]["CT"]
+    return tuple(float(g[f]) for f in COND_FEATURES)
+
+
 COND4_DIM = 4  # [sx, sy, sz, modality_flag]; CT flag 0, PET flag 1
 
 

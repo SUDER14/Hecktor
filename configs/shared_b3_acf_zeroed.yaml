@@ -1,0 +1,86 @@
+# B3: ACF at native spacing, conditioning vector zeroed (ablation)
+# Split and PET normalisation are fixed (see PROJECT_CONTEXT.md).
+# loader_batch_size * patch.num_samples must be divisible by train.micro_batch_size; effective batch = micro * accum = 8.
+seed: 42
+dataset: hecktor2026
+data_dir: E:/HECKTOR/HECKTOR 2026 Training Data.zip   # read in place; never extracted
+split:
+  strategy: test_centres_plus_stratified_val
+  test_centres:
+  - CHUS
+  - CHUV
+  val_frac: 0.1
+  path: configs/splits/hecktor2026_seed42.json
+conditioning:
+  stats_path: configs/splits/hecktor2026_seed42_conditioning_stats.json
+data:
+  source: acf_cache   # cropped .acf cache, src/data/acf_dataset.py
+  mode: native
+  pet_mode: shared   # CT and PET as two channels on one grid, one conditioning vector [sx,sy,sz]
+  label_map: [0, 1, 2]   # K = 3: background, label 1, label 2 (what the labels denote is NOT verified)
+cache:
+  dir: D:/hecktor_cache   # the .acf cache (outside the repo); dtype is stored per case
+patch:
+  spatial_size:
+  - 96
+  - 96
+  - 96
+  pos: 2
+  neg: 1
+  num_samples: 2
+  min_extent_mm: [40.0, 40.0, 40.0]   # sanity guard on the patch in mm, not a tuned value
+  max_extent_mm: [1200.0, 1200.0, 1500.0]
+intensity:
+  ct_window:
+    min: -1000   # clip to [-1000, 1000] then scale to [0, 1]
+    max: 1000
+  pet:
+    normalise: p99_5_positive_in_body   # per case; see src/data/acf_dataset.py
+baseline:
+  resample_spacing:   # manifest median of all 782 scans (VERIFIED: 0.9766 x 0.9766 x 3.27 mm)
+  - 0.9766
+  - 0.9766
+  - 3.27
+model:
+  name: acf
+  channels:
+  - 16
+  - 32
+  - 64
+  - 128
+  - 256
+  strides:
+  - 2
+  - 2
+  - 2
+  - 2
+  out_channels: 3
+  head: softmax
+  conditioning_zeroed: true
+loss:
+  smooth: 1.0
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  kl_anneal_epochs: 10
+  dice_weight: 1.0
+train:
+  n_epochs: 100
+  lr: 0.0003
+  weight_decay: 0.01
+  micro_batch_size: 2
+  accum_steps: 4
+  loader_batch_size: 1
+  amp: true
+  num_workers: 2
+  val_every: 5
+  device: auto
+scheduler:
+  name: cosine
+  eta_min: 1.0e-06
+checkpoint:
+  keep_last_n: 3
+infer:
+  overlap: 0.5
+  sw_batch_size: 2
+run:
+  dir: runs/shared_b3_acf_zeroed

@@ -1,0 +1,42 @@
+# Synthetic PET/CT cohort (src/data/synthetic_shared.py), CT/PET/label on one grid, native spacing, pet_mode shared.
+# Pipeline check only.
+seed: 42
+smoke_only: true
+dataset: hecktor2026
+data_dir: data/synthetic_hecktor2026_shared
+
+split:
+  strategy: group_by_centre
+  test_centres: [MDA]
+  val_frac: 0.2
+  path: results/synth_shared/split.json
+
+conditioning:
+  stats_path: results/synth_shared/cond_stats.json
+
+data:
+  mode: native
+  pet_mode: shared
+cache:
+  dir: results/synth_shared/cache
+  dtype: float32
+
+patch:
+  spatial_size: [64, 64, 64]
+  pos: 2
+  neg: 1
+  num_samples: 2
+  min_extent_mm: [8.0, 8.0, 8.0]
+
+intensity:
+  ct_window: {min: -1000, max: 400}
+  pet: {suv_clip_max: 10.0}
+
+baseline:
+  resample_spacing: [2.0, 2.0, 2.0]
+
+model:
+  name: acf
+  channels: [8, 16, 32, 64]
+  strides: [2, 2, 2]
+  out_channels: 2

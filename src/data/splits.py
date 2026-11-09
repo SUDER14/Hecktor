@@ -124,3 +124,31 @@ def apply_split(samples: list[dict], split: dict[str, list[str]]) -> dict[str, l
             raise KeyError(f"split references patient_ids not in samples: {missing}")
         out[subset] = [by_id[i] for i in ids]
     return out
+
+
+def stratified_val_split(samples: list[dict], test_centres: list[str], val_frac: float,
+                         seed: int) -> dict[str, list[str]]:
+    """Held-out TEST centres (whole centres, never split), then a seeded random `val_frac` of the
+    remaining cases as validation, stratified by centre (each centre contributes round(val_frac * n),
+    at least one if the centre has 2+ cases). No patient appears in two subsets; validation shares
+    centres with training by design (it tracks overfitting, the test centres measure generalisation)."""
+    check_test_centres(samples, test_centres)
+    tc = {c.upper() for c in test_centres}
+    unknown = tc - {s["centre"].upper() for s in samples}
+    if unknown:
+        raise ValueError(f"test_centres not present in samples: {sorted(unknown)}")
+    test_ids = sorted(s["patient_id"] for s in samples if s["centre"].upper() in tc)
+    rng = np.random.RandomState(seed)
+    train_ids, val_ids = [], []
+    by_centre: dict[str, list[str]] = {}
+    for s in samples:
+        if s["centre"].upper() not in tc:
+            by_centre.setdefault(s["centre"], []).append(s["patient_id"])
+    for centre in sorted(by_centre):
+        ids = sorted(by_centre[centre])
+        n_val = int(round(val_frac * len(ids))) if val_frac > 0 else 0
+        n_val = max(n_val, 1) if (val_frac > 0 and len(ids) >= 2) else n_val
+        picked = set(rng.permutation(ids)[:n_val].tolist())
+        val_ids += [i for i in ids if i in picked]
+        train_ids += [i for i in ids if i not in picked]
+    return {"train": sorted(train_ids), "val": sorted(val_ids), "test": test_ids}

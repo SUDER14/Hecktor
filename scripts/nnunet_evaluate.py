@@ -24,6 +24,7 @@ import pandas as pd  # noqa: E402
 
 from src.data.hecktor2026 import Hecktor2026Adapter  # noqa: E402
 from src.data.splits import load_split  # noqa: E402
+from src.data.zip_reader import load_nifti  # noqa: E402
 from src.metrics.segmentation import dice, hd95, surface_dice  # noqa: E402
 from src.training.train import get_git_info  # noqa: E402
 
@@ -33,7 +34,7 @@ def evaluate(data_dir: str, split_path: str, pred_dir: str, subset: str = "test"
     git, rows = get_git_info()["commit"], []
     for pid in load_split(split_path)[subset]:
         pred_img = nib.as_closest_canonical(nib.load(Path(pred_dir) / f"{pid}.nii.gz"))
-        lab_img = nib.as_closest_canonical(nib.load(samples[pid]["label"]))
+        lab_img = nib.as_closest_canonical(load_nifti(samples[pid]["label"]))
         pred, lab = np.asarray(pred_img.dataobj) > 0, np.asarray(lab_img.dataobj) > 0
         if pred.shape != lab.shape:
             raise ValueError(f"{pid}: prediction {pred.shape} is not on the native CT grid {lab.shape}")

@@ -75,6 +75,39 @@ def sliding_window_dual(forward_fn, ct: np.ndarray, pet: np.ndarray, ct_affine, 
     return {"p": p, "u": u, "pred": p.argmax(0).astype(np.uint8)}
 
 
+# --- shared-grid ("pet_mode: shared"): one (2,X,Y,Z) image, fixed-voxel windows -----------------
+@torch.no_grad()
+def sliding_window(forward_fn, image: np.ndarray, patch: tuple[int, int, int], num_classes: int,
+                   head: str = "softmax", overlap: float = 0.5, batch_size: int = 1,
+                   device="cpu") -> dict[str, np.ndarray]:
+    """forward_fn(patch (b,2,*patch)) -> (b,K,*patch).
+
+    image (2,X,Y,Z) [CT, PET] numpy on one grid. Returns {"p": (K,X,Y,Z),
+    "u": (1,X,Y,Z), "pred": (X,Y,Z) int}.
+    """
+    shape = image.shape[1:]
+    acc = np.zeros((num_classes,) + shape, np.float32)
+    cnt = np.zeros(shape, np.float32)
+    starts = [(i, j, k) for i in window_starts(shape[0], patch[0], overlap)
+              for j in window_starts(shape[1], patch[1], overlap)
+              for k in window_starts(shape[2], patch[2], overlap)]
+    for b0 in range(0, len(starts), batch_size):
+        chunk = starts[b0:b0 + batch_size]
+        x = torch.from_numpy(np.stack([extract_padded(image, st, patch) for st in chunk])).float().to(device)
+        out = forward_fn(x).float()                                            # (b,K,*patch)
+        out = (torch.softmax(out, 1) if head == "softmax" else out).cpu().numpy()
+        for st, o in zip(chunk, out):
+            sl = tuple(slice(s, min(s + p, n)) for s, p, n in zip(st, patch, shape))
+            inner = tuple(slice(0, s.stop - s.start) for s in sl)
+            acc[(slice(None),) + sl] += o[(slice(None),) + inner]
+            cnt[sl] += 1
+    acc /= np.maximum(cnt, 1)[None]
+    t = torch.from_numpy(acc)[None]
+    summ = dirichlet_summary(t) if head == "evidential" else softmax_summary(t)
+    p, u = summ["p"][0].numpy(), summ["u"][0].numpy()
+    return {"p": p, "u": u, "pred": p.argmax(0).astype(np.uint8)}
+
+
 def save_nifti(array: np.ndarray, affine, path: str | Path, dtype=None) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -35,9 +35,14 @@ from torch.amp import GradScaler, autocast
 from src.data.conditioning import load_stats
 from src.data.dataset import load_config
 from src.data.dual_cache import build_dual_datasets
+from src.data.acf_dataset import build_acf_datasets
+from src.data.shared_cache import build_dual_datasets as build_shared_datasets
 from src.data.seed import seed_everything
+from src.eval import evaluate_shared
 from src.eval.evaluate_cases import call_model, evaluate_dataset, summarize
 from src.models.acf import build_acf
+from src.models.acf_shared import build_acf as build_acf_shared
+from src.models.dual_encoder_shared import build_dual_encoder_unet as build_dual_shared
 from src.models.dual_encoder import build_dual_encoder_unet
 from src.models.unet3d import build_unet3d
 from src.training.checkpoint import (
@@ -47,13 +52,26 @@ from src.training.losses import dice_ce_loss, evidential_loss
 from src.training.train import apply_overrides, get_git_info, resolve_device, warn_if_smoke_only
 
 MODEL_BUILDERS = {"unet3d": build_unet3d, "dual_unet": build_dual_encoder_unet, "acf": build_acf}
+# pet_mode "shared": CT and PET are two channels on the CT grid, one conditioning vector [sx,sy,sz]
+SHARED_BUILDERS = {"unet3d": build_unet3d, "dual_unet": build_dual_shared, "acf": build_acf_shared}
+
+
+def pet_mode(config: dict) -> str:
+    """"shared" or "rederived" (re-derived coarse PET: an approximation of the acquisition grid, NOT native PET).
+    Configs without the key keep the original two-grid behaviour."""
+    return config.get("data", {}).get("pet_mode", "rederived")
 
 
 def build_model(config: dict) -> torch.nn.Module:
     name = config["model"]["name"]
-    if name not in MODEL_BUILDERS:
-        raise ValueError(f"unknown model {name!r}; registered: {list(MODEL_BUILDERS)}")
-    return MODEL_BUILDERS[name](config)
+    builders = SHARED_BUILDERS if pet_mode(config) == "shared" else MODEL_BUILDERS
+    if name not in builders:
+        raise ValueError(f"unknown model {name!r}; registered: {list(builders)}")
+    if pet_mode(config) == "shared":  # one source of truth for the patch-extent sanity bounds: config["patch"]
+        bounds = {k: config["patch"][k] for k in ("min_extent_mm", "max_extent_mm")
+                  if config.get("patch", {}).get(k) and name != "unet3d"}
+        config = {**config, "model": {**bounds, **config["model"]}}
+    return builders[name](config)
 
 
 def build_optimizer_and_scheduler(model, config):
@@ -75,7 +93,7 @@ def compute_loss(out, labels, config, epoch):
 
 
 def micro_batches(batch: dict, size: int):
-    n = batch["ct"].shape[0]
+    n = (batch["image"] if "image" in batch else batch["ct"]).shape[0]
     if n % size:
         raise ValueError(f"fetched {n} crops, not divisible by micro_batch_size={size}; adjust "
                          "train.loader_batch_size * patch.num_samples")
@@ -102,7 +120,10 @@ def train_one_epoch(model, loader, optimizer, scaler, device, config, epoch) -> 
         for mbatch in micro_batches(batch, mb):
             d = {k: v.to(device, non_blocking=True) for k, v in mbatch.items() if torch.is_tensor(v)}
             with autocast(device_type=device.type, enabled=use_amp):
-                out = call_model(model, d["ct"], d["pet"], d["cond_ct"], d["cond_pet"], d["ct_spacing"], d["pet_spacing"])
+                if pet_mode(config) == "shared":
+                    out = evaluate_shared.call_model(model, d["image"], d["cond"], d["spacing"])
+                else:
+                    out = call_model(model, d["ct"], d["pet"], d["cond_ct"], d["cond_pet"], d["ct_spacing"], d["pet_spacing"])
             loss, _ = compute_loss(out, d["label"], config, epoch)
             scaler.scale(loss / accum).backward()
             tot, n, step = tot + loss.item(), n + 1, step + 1
@@ -143,7 +164,12 @@ def train(config: dict, resume: bool = False) -> Path:
     (run_dir / "env.json").write_text(json.dumps(env, indent=1))
     print(f"seed {config['seed']}  device {device}  git {env['git_commit']} dirty={env['git_dirty']}")
 
-    datasets = build_dual_datasets(config)
+    shared = pet_mode(config) == "shared"
+    if config.get("data", {}).get("source") == "acf_cache":   # cropped .acf cache (src/data/acf_dataset.py)
+        datasets = build_acf_datasets(config)
+    else:
+        datasets = (build_shared_datasets if shared else build_dual_datasets)(config)
+    evaluate = evaluate_shared.evaluate_dataset if shared else evaluate_dataset
     t = config["train"]
     nw = (os.cpu_count() or 0) if t.get("num_workers", 0) == "auto" else int(t.get("num_workers", 0))
     loader = MonaiDataLoader(datasets["train"], batch_size=t["loader_batch_size"], shuffle=True, num_workers=nw,
@@ -172,7 +198,7 @@ def train(config: dict, resume: bool = False) -> Path:
             scheduler.step()
         is_best = False
         if epoch % t.get("val_every", 1) == 0 or epoch == t["n_epochs"]:
-            df = evaluate_dataset(model, datasets["val"], config, stats, device, max_cases=t.get("val_max_cases"), git_hash=git)
+            df = evaluate(model, datasets["val"], config, stats, device, max_cases=t.get("val_max_cases"), git_hash=git)
             s = summarize(df)
             row.update({f"val_{k}": v for k, v in s.items()})
             vd = s["dice"]

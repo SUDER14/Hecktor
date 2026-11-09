@@ -4,7 +4,9 @@ Why: the whole premise of acquisition conditioning is that spacing varies betwee
 scans and centres; this is the measured evidence for (or against) that, from
 headers only (no voxel data is read).
 
-    python scripts/spacing_manifest.py --data_dir <hecktor2026_training> --out results/manifest
+    python scripts/spacing_manifest.py --data_dir <hecktor2026_training or the .zip> --out results/manifest
+
+Zip input is read in memory, header bytes only (see src/data/zip_reader.py).
 """
 
 from __future__ import annotations
@@ -24,19 +26,37 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from src.data.hecktor2026 import Hecktor2026Adapter  # noqa: E402
+from src.data.zip_reader import load_header  # noqa: E402
+
+OBLIQUE_TOL = 1e-3
+
+
+def is_oblique(affine: np.ndarray, tol: float = OBLIQUE_TOL) -> bool:
+    """True if any voxel axis has an off-principal-axis component above `tol` of its length.
+
+    Oblique grids cannot be handled by a pure axis flip/permute reorientation.
+    """
+    lin = np.asarray(affine, float)[:3, :3]
+    norms = np.linalg.norm(lin, axis=0)
+    dom = np.abs(lin).max(axis=0)
+    return bool(((norms - dom) / np.maximum(norms, 1e-12) > tol).any())
 
 
 def build_manifest(data_dir: str | Path) -> pd.DataFrame:
     rows = []
     for s in Hecktor2026Adapter(data_dir).training_samples():
         for mod, path in zip(s["modalities"] + ["LABEL"], s["image"] + [s["label"]]):
-            img = nib.load(path)
-            sx, sy, sz = (float(z) for z in img.header.get_zooms()[:3])
-            shape = img.shape[:3]
+            h = load_header(path)
+            aff = h.get_best_affine()
+            sx, sy, sz = (float(z) for z in h.get_zooms()[:3])
+            shape = h.get_data_shape()[:3]
             rows.append({"patient_id": s["patient_id"], "centre": s["centre"], "modality": mod,
                          "sx": sx, "sy": sy, "sz": sz, "nx": shape[0], "ny": shape[1], "nz": shape[2],
                          "anisotropy": max(sx, sy, sz) / min(sx, sy, sz),
-                         "fov_x_mm": sx * shape[0], "fov_y_mm": sy * shape[1], "fov_z_mm": sz * shape[2]})
+                         "fov_x_mm": sx * shape[0], "fov_y_mm": sy * shape[1], "fov_z_mm": sz * shape[2],
+                         "orientation": "".join(nib.aff2axcodes(aff)), "oblique": is_oblique(aff),
+                         "dtype": str(h.get_data_dtype()),
+                         "affine": " ".join(f"{v:.6g}" for v in aff[:3].ravel())})
     return pd.DataFrame(rows)
 
 

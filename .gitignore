@@ -24,3 +24,13 @@ Thumbs.db
 
 # preprocessing cache (scripts/precompute_cache.py)
 /cache/
+
+# HECKTOR data and caches: never committed (the cache lives outside the repo, these are belt and braces)
+*.zip
+*.nii
+*.nii.gz
+*.acf
+*.npy
+hecktor_cache/
+_probe*/
+runs/

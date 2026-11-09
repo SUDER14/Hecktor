@@ -92,17 +92,17 @@ def read_volume_geometry(path: Path) -> dict | None:
     axis for standard axial acquisitions -- verify orientation before trusting
     that on a new dataset.
     """
-    import nibabel as nib  # imported here so --help works without it
+    from src.data.zip_reader import load_header  # header-only; also reads "<zip>::<member>" paths
 
     try:
-        img = nib.load(str(path))
+        header = load_header(str(path))
     except Exception as exc:  # corrupt file, wrong extension, truncated download
         print(f"  ! could not read {path.name}: {exc}", file=sys.stderr)
         return None
 
-    zooms = img.header.get_zooms()[:3]
+    zooms = header.get_zooms()[:3]
     sx, sy, sz = (float(z) for z in zooms)
-    shape = img.shape[:3]
+    shape = header.get_data_shape()[:3]
 
     if min(sx, sy, sz) <= 0:
         print(f"  ! non-positive spacing in {path.name}: {zooms}", file=sys.stderr)

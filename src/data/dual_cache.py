@@ -29,12 +29,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from monai.transforms import (
-    Compose, EnsureChannelFirstd, LoadImaged, Orientationd, ScaleIntensityRanged, Spacingd,
-)
+import nibabel as nib
+from monai.data import MetaTensor
+from monai.transforms import Compose, ScaleIntensityRanged, Spacingd
 
 from src.data.conditioning import to_cond4
+from src.data.pet_rederive import DEFAULT_PET_SPACING, rederive_pet
 from src.data.physical_crop import grid_from_affine, physical_crop
+from src.data.zip_reader import load_nifti
 
 CACHE_VERSION = 2
 MAX_FG = 100_000
@@ -43,8 +45,12 @@ MAX_FG = 100_000
 def signature(config: dict, mode: str) -> dict:
     w, suv = config["intensity"]["ct_window"], config["intensity"]["pet"]["suv_clip_max"]
     rs = [float(x) for x in config["baseline"]["resample_spacing"]] if mode == "resampled" else None
-    return {"version": CACHE_VERSION, "mode": mode, "axcodes": "RAS", "resample_spacing": rs,
-            "ct_window": [w["min"], w["max"]], "suv_clip_max": suv}
+    sig = {"version": CACHE_VERSION, "mode": mode, "axcodes": "RAS", "resample_spacing": rs,
+           "ct_window": [w["min"], w["max"]], "suv_clip_max": suv}
+    if mode == "native" and config.get("data", {}).get("pet_mode") == "rederived":
+        sig["pet_mode"] = "rederived"
+        sig["pet_spacing"] = [float(x) for x in config["data"].get("pet_spacing", DEFAULT_PET_SPACING)]
+    return sig
 
 
 def _atomic(path: Path, writer) -> None:
@@ -66,14 +72,24 @@ def build_entry(sample: dict, config: dict, cache_dir: str | Path, mode: str,
     pid = sample["patient_id"]
     paths = dict(zip(sample["modalities"], sample["image"]))
     keys = ["ct", "pet", "label"]
-    stages = [LoadImaged(keys=keys), EnsureChannelFirstd(keys=keys), Orientationd(keys=keys, axcodes="RAS")]
+    # zip-aware load + reorientation to RAS (a flip/permute, never an interpolation)
+    raw = {}
+    for k, path in (("ct", paths["CT"]), ("pet", paths["PT"]), ("label", sample["label"])):
+        img = nib.as_closest_canonical(load_nifti(path))
+        raw[k] = (np.asarray(img.dataobj, dtype=np.float32), np.asarray(img.affine, float))
+    info = None
+    if mode == "native" and config.get("data", {}).get("pet_mode") == "rederived":
+        # PET is released on the CT grid; go down to a coarse grid. APPROXIMATION, not native PET.
+        coarse, caff, info = rederive_pet(raw["pet"][0], raw["ct"][1], config["data"].get("pet_spacing", DEFAULT_PET_SPACING))
+        raw["pet"] = (coarse, caff)
+    stages = []
     if mode == "resampled":
         stages.append(Spacingd(keys=keys, pixdim=config["baseline"]["resample_spacing"],
                                mode=("bilinear", "bilinear", "nearest")))
     w, suv = config["intensity"]["ct_window"], config["intensity"]["pet"]["suv_clip_max"]
     stages += [ScaleIntensityRanged(keys=["ct"], a_min=w["min"], a_max=w["max"], b_min=0.0, b_max=1.0, clip=True),
                ScaleIntensityRanged(keys=["pet"], a_min=0.0, a_max=suv, b_min=0.0, b_max=1.0, clip=True)]
-    d = Compose(stages)({"ct": paths["CT"], "pet": paths["PT"], "label": sample["label"]})
+    d = Compose(stages)({k: MetaTensor(torch.from_numpy(a)[None], affine=torch.as_tensor(af)) for k, (a, af) in raw.items()})
 
     ct_aff, pet_aff = np.asarray(d["ct"].affine, float), np.asarray(d["pet"].affine, float)
     ct, pet = (np.ascontiguousarray(d[k].numpy()[0]).astype(dtype) for k in ("ct", "pet"))

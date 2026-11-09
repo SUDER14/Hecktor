@@ -4,7 +4,7 @@
 # loader_batch_size * patch.num_samples must be divisible by train.micro_batch_size; effective batch = micro * accum = 8.
 seed: 42
 dataset: hecktor2026
-data_dir: data/hecktor2026_training
+data_dir: E:/HECKTOR/HECKTOR 2026 Training Data.zip   # read in place; never extracted
 split:
   strategy: group_by_centre
   test_centres:
@@ -15,8 +15,10 @@ conditioning:
   stats_path: configs/splits/hecktor2026_seed42_conditioning_stats.json
 data:
   mode: resampled
+  pet_mode: rederived   # PET re-derived from the CT-grid PET: an APPROXIMATION of the acquisition grid, not native PET
+  pet_spacing: [4.0, 4.0, 4.0]
 cache:
-  dir: /tmp/acf_cache_resampled
+  dir: D:/hecktor_cache/rederived_resampled   # outside the repo; one folder per preprocessing variant
   dtype: float16
 patch:
   spatial_size:
@@ -34,10 +36,10 @@ intensity:
   pet:
     suv_clip_max: 20.0
 baseline:
-  resample_spacing:
-  - 1.0
-  - 1.0
-  - 1.0
+  resample_spacing:   # manifest median of all 782 scans (VERIFIED: 0.9766 x 0.9766 x 3.27 mm)
+  - 0.9766
+  - 0.9766
+  - 3.27
 model:
   name: dual_unet
   channels:

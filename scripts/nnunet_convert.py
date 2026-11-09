@@ -30,20 +30,21 @@ import numpy as np  # noqa: E402
 
 from src.data.hecktor2026 import Hecktor2026Adapter  # noqa: E402
 from src.data.splits import load_split  # noqa: E402
+from src.data.zip_reader import load_nifti  # noqa: E402
 from src.eval.infer import resample_to_grid  # noqa: E402
 
 
 def convert_case(sample: dict, img_dir: Path, lab_dir: Path | None) -> None:
     paths = dict(zip(sample["modalities"], sample["image"]))
-    ct = nib.as_closest_canonical(nib.load(paths["CT"]))
-    pet = nib.as_closest_canonical(nib.load(paths["PT"]))
+    ct = nib.as_closest_canonical(load_nifti(paths["CT"]))
+    pet = nib.as_closest_canonical(load_nifti(paths["PT"]))
     pet_on_ct = resample_to_grid(np.asarray(pet.dataobj, np.float32), pet.affine, ct.affine, ct.shape[:3], order=1)
     pid = sample["patient_id"]
     img_dir.mkdir(parents=True, exist_ok=True)
     nib.save(nib.Nifti1Image(np.asarray(ct.dataobj, np.float32), ct.affine), img_dir / f"{pid}_0000.nii.gz")
     nib.save(nib.Nifti1Image(pet_on_ct.astype(np.float32), ct.affine), img_dir / f"{pid}_0001.nii.gz")
     if lab_dir is not None:
-        lab = nib.as_closest_canonical(nib.load(sample["label"]))
+        lab = nib.as_closest_canonical(load_nifti(sample["label"]))
         lab_dir.mkdir(parents=True, exist_ok=True)
         nib.save(nib.Nifti1Image((np.asarray(lab.dataobj) > 0).astype(np.uint8), ct.affine), lab_dir / f"{pid}.nii.gz")
 

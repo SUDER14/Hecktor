@@ -136,10 +136,27 @@ and a 300 mm square in x and y centred on the body centroid of that slab; clampe
   on that and claims nothing new for the idea. With one shared grid the CT and PET hypernetworks receive the same vector and differ only
   in their weights.
 
-## 10. NOT VERIFIED / open
+## 10. PET-scale sidecar, resampled B1/B2 cache, loading speed (local measurements)
+
+- **PET-scale sidecar** (`scripts/precompute_pet_scales.py`, `src/data/acf_dataset.py`): the per-case 99.5th-percentile scale is computed once
+  for all 782 cases and stored in `D:\hecktor_cache\pet_scale.json` (409 s). Resumable; an entry is treated as stale if the case file size
+  changed; a different rule invalidates the whole file. Scale min / median / max 0.77 / 10.06 / 58,476; 731 cases below 50, 51 at or
+  above 50 (the high-scale cases found in section 3). VERIFIED.
+- **Resampled B1/B2 cache, measured on 20 stratified seeded cases only (not built)** (`scripts/build_resampled_cache.py --measure 20`):
+  target spacing 0.9766 x 0.9766 x 3.27 mm; 46.2 MiB and 6.4 s per case; projected full cache 35.3 GB, 1.39 h; D: free 72.5 GB
+  now, 36.3 GB projected after a full build. Gates (80 GB; 20 GB free) not tripped. The probe was deleted. The datasets do not read this
+  cache yet: B1/B2 still resample on the fly.
+- **Loading speed**, seconds per fetch (one patient = 2 patches = one micro-batch of 2), 24 timed fetches per setting, real `.acf` cache,
+  peak RAM 2.2 GB (guard 6.5 GB): native path (B3-B5) 0.80 / 0.304 / 0.213 s with 0 / 2 / 3 workers; on-the-fly resampled path (B1/B2)
+  1.99 / 0.742 / 0.568 s. One epoch is 592 fetches, so the loader alone needs 7.9 / 3.0 / 2.1 min per epoch (native) and
+  19.6 / 7.3 / 5.6 min (resampled). VERIFIED on this laptop; other machines differ.
+- **GPU**: none on this machine (no `nvidia-smi`, CPU-only PyTorch, Intel HD Graphics 620 only). Peak VRAM and GPU seconds per step are
+  NOT MEASURED. `scripts/colab_timing.py` times B1 and B4 (fp32 and mixed precision) on synthetic tensors on a CUDA runtime.
+
+## 11. NOT VERIFIED / open
 
 - PET units (SUV or not) and the cause of the MDA-402..447 scale; what labels 1 and 2 denote.
 - The normalisation's effect on any model (no model has been trained); the 99.5th-percentile rule was computed on the cache, not tested for
   stability across scanners.
-- Any training time, memory or accuracy figure (no GPU has been used here); see the timing probe, which is CPU only.
+- Any GPU training time, VRAM or accuracy figure (no GPU has been used here).
 - `CLAUDE.md` still describes the earlier design (native 4 mm PET encoder, physical-box crops) and was not edited.

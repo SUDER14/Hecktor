@@ -204,3 +204,43 @@ def test_committed_real_split_matches_the_decision():
     assert not (ids["train"] & ids["val"]) and not (ids["train"] & ids["test"]) and not (ids["val"] & ids["test"])
     assert sum(map(len, ids.values())) == 782 and {i.split("-")[0] for i in ids["test"]} == {"CHUS", "CHUV"}
     assert not {i.split("-")[0] for i in ids["train"] | ids["val"]} & {"CHUS", "CHUV"}
+
+
+def test_sidecar_is_resumable_detects_stale_files_and_is_used_by_the_dataset(world, monkeypatch):
+    import src.data.acf_dataset as m
+    cfg, split, _, cache = world
+    cache = Path(cache)
+    (cache / "pet_scale.json").unlink(missing_ok=True)
+    m._SCALES.clear()
+    m._SIDECARS.clear()
+    calls = []
+    real = m.pet_scale
+    monkeypatch.setattr(m, "pet_scale", lambda ct, pet, **k: (calls.append(1), real(ct, pet, **k))[1])
+    n = len(list(cache.glob("*.acf")))
+    first = m.write_scale_sidecar(cache, progress_every=2, log=lambda *_: None)
+    assert len(first) == n == len(calls)
+    m.write_scale_sidecar(cache, log=lambda *_: None)
+    assert len(calls) == n                                   # resumed: nothing recomputed
+    ds = build_acf_datasets(cfg)["val"]
+    pid = ds.samples[0]["patient_id"]
+    d = json.loads((cache / "pet_scale.json").read_text())
+    assert d["rule"]["percentile"] == 99.5 and d["scales"][pid]["bytes"] == (cache / f"{pid}.acf").stat().st_size
+    # the dataset takes the scale from the sidecar: doubling the stored value halves the PET channel
+    base = ds[0]["image"][1].numpy()
+    d["scales"][pid]["scale"] *= 2
+    (cache / "pet_scale.json").write_text(json.dumps(d))
+    m._SCALES.clear()
+    m._SIDECARS.clear()
+    assert np.allclose(ds[0]["image"][1].numpy(), base / 2, rtol=1e-5)
+    # a changed file size makes the entry stale: it is recomputed, not trusted
+    m._SCALES.clear()
+    m._SIDECARS.clear()
+    d["scales"][pid] = {"scale": 123456.0, "bytes": 1}
+    (cache / "pet_scale.json").write_text(json.dumps(d))
+    assert m.get_pet_scale(cache, pid) == pytest.approx(first[pid])
+    # a different rule invalidates the whole sidecar
+    m._SCALES.clear()
+    m._SIDECARS.clear()
+    d["rule"]["percentile"] = 90.0
+    (cache / "pet_scale.json").write_text(json.dumps(d))
+    assert m.load_sidecar(cache) == {}

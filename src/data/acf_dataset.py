@@ -59,35 +59,75 @@ def pet_scale(ct, pet, chunk: int = 16) -> float:
 
 
 _SCALES: dict[tuple[str, str], float] = {}
-
-
-def get_pet_scale(cache_dir, pid: str, ct=None, pet=None) -> float:
-    """Per-case PET scale: process memo -> sidecar `<cache_dir>/pet_scale.json` -> compute from the arrays."""
-    key = (str(cache_dir), pid)
-    if key in _SCALES:
-        return _SCALES[key]
-    side = Path(cache_dir) / "pet_scale.json"
-    if side.exists():
-        d = json.loads(side.read_text())
-        if pid in d.get("scales", {}) and d.get("rule") == _rule():
-            _SCALES[key] = d["scales"][pid]
-            return _SCALES[key]
-    if ct is None:
-        _, arr = crop_cache.open_case(Path(cache_dir) / f"{pid}.acf")
-        ct, pet = arr["ct"], arr["pet"]
-    _SCALES[key] = pet_scale(ct, pet)
-    return _SCALES[key]
+_SIDECARS: dict[str, dict] = {}
+SIDECAR_NAME = "pet_scale.json"
 
 
 def _rule() -> dict:
     return {"percentile": PET_PERCENTILE, "body_hu": BODY_HU, "positive_only": True}
 
 
-def write_scale_sidecar(cache_dir, pids: list[str]) -> dict:
-    """Optional: compute every scale once and persist it (workers then skip the computation)."""
-    scales = {p: get_pet_scale(cache_dir, p) for p in pids}
-    Path(cache_dir, "pet_scale.json").write_text(json.dumps({"rule": _rule(), "scales": scales}))
-    return scales
+def load_sidecar(cache_dir) -> dict[str, dict]:
+    """{pid: {"scale": float, "bytes": int}} from `<cache_dir>/pet_scale.json` if its rule matches, else {}."""
+    p = Path(cache_dir) / SIDECAR_NAME
+    if not p.exists():
+        return {}
+    d = json.loads(p.read_text())
+    return d["scales"] if d.get("rule") == _rule() else {}
+
+
+def _sidecar_scale(cache_dir, pid: str):
+    """Scale from the sidecar, or None if absent or STALE (the .acf file's size changed since it was computed,
+    e.g. a case was re-stored)."""
+    key = str(cache_dir)
+    if key not in _SIDECARS:
+        _SIDECARS[key] = load_sidecar(cache_dir)
+    e = _SIDECARS[key].get(pid)
+    f = Path(cache_dir) / f"{pid}.acf"
+    if e is None or not f.exists() or f.stat().st_size != e["bytes"]:
+        return None
+    return float(e["scale"])
+
+
+def get_pet_scale(cache_dir, pid: str, ct=None, pet=None) -> float:
+    """Per-case PET scale: process memo -> sidecar (valid) -> compute from the arrays (the rule is a pure function
+    of the case, so all three agree)."""
+    key = (str(cache_dir), pid)
+    if key in _SCALES:
+        return _SCALES[key]
+    sc = _sidecar_scale(cache_dir, pid)
+    if sc is None:
+        if ct is None:
+            _, arr = crop_cache.open_case(Path(cache_dir) / f"{pid}.acf")
+            ct, pet = arr["ct"], arr["pet"]
+        sc = pet_scale(ct, pet)
+    _SCALES[key] = sc
+    return sc
+
+
+def write_scale_sidecar(cache_dir, pids: list[str] | None = None, progress_every: int = 20, log=print) -> dict:
+    """Compute every case's scale ONCE and persist it, resumably: entries already valid in an existing sidecar are
+    kept, the file is rewritten every `progress_every` new cases, one case at a time. Returns {pid: scale}."""
+    cache_dir = Path(cache_dir)
+    pids = pids or sorted(f.stem for f in cache_dir.glob("*.acf"))
+    entries = dict(load_sidecar(cache_dir))
+    out = cache_dir / SIDECAR_NAME
+    todo = 0
+    for pid in pids:
+        f = cache_dir / f"{pid}.acf"
+        if pid in entries and entries[pid]["bytes"] == f.stat().st_size:
+            continue
+        _, arr = crop_cache.open_case(f)
+        entries[pid] = {"scale": pet_scale(arr["ct"], arr["pet"]), "bytes": f.stat().st_size}
+        del arr
+        todo += 1
+        if todo % progress_every == 0:
+            out.write_text(json.dumps({"rule": _rule(), "scales": entries}))
+            log(f"{len(entries)}/{len(pids)} scales")
+    out.write_text(json.dumps({"rule": _rule(), "scales": entries}))
+    _SIDECARS.pop(str(cache_dir), None)
+    _SCALES.clear()
+    return {p: entries[p]["scale"] for p in pids}
 
 
 def _window(arr, start, size, fill):

@@ -53,9 +53,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--micro_batch", type=int, default=None, help="override train.micro_batch_size (memory); results are per this size")
     ap.add_argument("--steps", type=int, default=3, help="timed steps after one warm-up step")
     a = ap.parse_args()
     cfg = yaml.safe_load(Path(a.config).read_text())
+    if a.micro_batch:
+        cfg["train"]["micro_batch_size"] = a.micro_batch
     t = cfg["train"]
     torch.manual_seed(cfg["seed"])
     torch.set_num_threads(max(1, min(2, torch.get_num_threads())))   # thread cap
@@ -82,6 +85,7 @@ def main() -> None:
     gc.collect()
 
     mb = t["micro_batch_size"]
+    res["micro_batch_measured"], res["micro_batch_in_config"] = mb, yaml.safe_load(Path(a.config).read_text())["train"]["micro_batch_size"]
     batch = {k: torch.stack([f[k] for f in fetch[:mb]]) for k in ("image", "label", "cond", "spacing")}
     batch = {k: v.to(dev) for k, v in batch.items()}
     model = build_model(cfg).to(dev)
@@ -125,11 +129,12 @@ def main() -> None:
     res["peak_vram_mb"] = torch.cuda.max_memory_allocated() / 2**20 if dev.type == "cuda" else "NOT MEASURED (no CUDA on this machine)"
 
     fetches = res["n_train_cases"] / t["loader_batch_size"]
-    micro_per_fetch = (t["loader_batch_size"] * cfg["patch"]["num_samples"]) / mb
-    res["epoch_micro_steps"] = fetches * micro_per_fetch
-    res["epoch_step_time_s_on_this_device"] = res["epoch_micro_steps"] * res["step_s_mean"]
+    patches_per_epoch = fetches * cfg["patch"]["num_samples"]
+    res["patches_per_epoch"] = patches_per_epoch
+    res["epoch_steps_at_measured_batch"] = patches_per_epoch / mb
+    res["epoch_step_time_s_on_this_device"] = res["epoch_steps_at_measured_batch"] * res["step_s_mean"]
     res["epoch_data_time_s_single_process"] = fetches * res["data_s_per_train_fetch"]
-    res["epoch_flops_train_estimate"] = res["epoch_micro_steps"] * res["flops_forward_microbatch"] * 3  # fwd + ~2x for backward
+    res["epoch_flops_train_estimate"] = res["epoch_steps_at_measured_batch"] * res["flops_forward_microbatch"] * 3  # fwd + ~2x backward (rule of thumb, not measured)
     res["n_epochs_config"], res["val_every"] = t["n_epochs"], t.get("val_every", 1)
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(res, indent=1, default=str))

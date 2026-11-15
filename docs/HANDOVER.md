@@ -22,12 +22,21 @@ mode is not wired to the `.acf` cache and has been dropped for now.
 
 ## Not done
 
-- Phase 3 item 5: stored resampled cache for B1/B2 (20-case projection 35.3 GB, over the 30 GB
-  pre-approval). Resampled mode currently resamples at read time.
-- Phase 3 item 6: pet_mode rederived wired to the `.acf` cache (dropped for now).
+Deferred by the owner (16 Nov 2026), not wanted now:
+
 - Phase 3 item 7: loader seconds per fetch, each path, 1 and 2 workers.
 - Phase 3 item 8: `docs/DATA_REPORT.md` update from script outputs.
-- Phase 3 item 1: sidecar test on one MDA-402..447 case.
-- Phases 4 to 10 (correctness gates, analysis plan, and everything after).
-- `src/eval/experiments.py` E1-E6 still use the old two-grid loader and Bonferroni.
+- Phase 8: timing notebook and nnU-Net preparation.
+
+Dropped by the owner: rederived PET mode (shared PET only).
+
+Not built, by decision: the stored resampled cache for B1/B2 (20-case projection 35.3 GB, over the
+30 GB limit). B1/B2 resample each cropped volume at load time instead (`data.mode: resampled`).
+`scripts/build_resampled_cache.py` can build the stored cache later on a machine with the disk for it.
+
+Still open:
+
+- Phases 4 to 7, 9 and 10 (see `results/fable_run/PROGRESS.txt` for the current phase).
+- `src/eval/experiments.py` E1-E6 still use the old two-grid loader and Bonferroni (Phase 5 replaces
+  Bonferroni with Holm).
 - Open decisions: `results/fable_run/NEEDS_DECISION.txt` items 2, 3, 4, 6, 7.

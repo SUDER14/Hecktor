@@ -7,7 +7,7 @@ import yaml
 from src.training.run import build_model
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
-ACF_PARAMS = 6_229_986  # B3/B4/B5, recorded in docs/FINAL_REPORT.md
+ACF_PARAMS = 6_230_003  # B3/B4/B5, two-grid design, K = 3 (K = 2 gave 6,229,986, the figure in docs/FINAL_REPORT.md)
 TOL = 0.03
 
 

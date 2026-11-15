@@ -5,8 +5,10 @@ Normalisation, identical for every case and every centre (nothing is excluded, n
   PET  divide by the 99.5th percentile of the POSITIVE PET voxels inside the CT body mask (CT > -500 HU),
        computed from that case alone at load time (memoised per process; optional JSON sidecar). The released PET
        is on very different numeric scales in some cases (header PET maxima from ~10 to ~3e5), so a per-case
-       scale is used; units are not documented and are not assumed. No upper clip is applied unless
-       config["intensity"]["pet"]["clip_max"] is set (it is not by default).
+       scale is used; units are not documented and are not assumed. The scaled PET is then clipped to
+       [0, PET_CLIP_MAX = 20] as a safety bound only, by the same rule for every case; config
+       ["intensity"]["pet"]["clip_max"] overrides the upper bound. (`ct_window` and `suv_clip_max` in the configs
+       are not read by this path.)
 The label is stored raw (0, 1, 2) and mapped to classes at read time by data.label_map (K = 3: identity).
 
 Two preprocessing modes, both computed from the cropped native arrays (no second cache):
@@ -31,13 +33,18 @@ from scipy import ndimage
 from src.data import crop_cache
 from src.data.conditioning import load_stats, make_cond
 from src.data.crop import sample_centre_vox
-from src.data.geometry import DEFAULT_MAX_EXTENT_MM, DEFAULT_MIN_EXTENT_MM, check_patch_extent
+from src.data.geometry import (
+    DEFAULT_MAX_EXTENT_MM,
+    DEFAULT_MIN_EXTENT_MM,
+    check_patch_extent,
+)
 from src.data.shared_cache import apply_label_map, label_map
 from src.data.splits import load_split
 
 CT_LO, CT_HI = -1000.0, 1000.0
 BODY_HU = -500.0
 PET_PERCENTILE = 99.5
+PET_CLIP_MAX = 20.0  # applied to PET after division by its per-case scale
 CT_FILL = CT_LO  # air outside the volume
 
 
@@ -144,8 +151,13 @@ def _window(arr, start, size, fill):
     return out
 
 
-def _normalise(ct, pet, scale: float, clip_max=None):
+def _normalise(ct, pet, scale: float, clip_max: float | None = PET_CLIP_MAX):
+    """Divide PET by its per-case scale, then clip to [0, clip_max]. The bound is a safety net applied by the same
+    rule to every case (after scaling, ordinary values sit near 1), never a per-centre fix; `clip_max=None`
+    disables only the upper bound. The lower bound removes the tiny negatives some cases carry (audit: MDA-228,
+    MDA-295, minimum -4e-4)."""
     p = pet.astype(np.float32) / scale
+    p = np.maximum(p, 0.0)
     if clip_max is not None:
         p = np.minimum(p, clip_max)
     return ct_normalise(ct), p
@@ -210,7 +222,7 @@ class _Base(torch.utils.data.Dataset):
         self.mode = config.get("data", {}).get("mode", "native")
         self.target = [float(x) for x in config["baseline"]["resample_spacing"]]
         self.lm = label_map(config)
-        self.clip_max = config.get("intensity", {}).get("pet", {}).get("clip_max")
+        self.clip_max = config.get("intensity", {}).get("pet", {}).get("clip_max", PET_CLIP_MAX)
         self.heads = [crop_cache.read_header(self.dir / f"{s['patient_id']}.acf") for s in samples]
         for s, h in zip(self.samples, self.heads):
             sp = self.target if self.mode == "resampled" else h["spacing"]

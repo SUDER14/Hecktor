@@ -10,8 +10,16 @@ import pytest
 
 from src.data import crop_cache
 from src.data.acf_dataset import (
-    AcfCropDataset, AcfVolumeDataset, build_acf_datasets, ct_normalise, get_pet_scale, pet_scale,
-    resample_target_shape, resample_volume, resampled_affine, write_scale_sidecar,
+    AcfCropDataset,
+    AcfVolumeDataset,
+    build_acf_datasets,
+    ct_normalise,
+    get_pet_scale,
+    pet_scale,
+    resample_target_shape,
+    resample_volume,
+    resampled_affine,
+    write_scale_sidecar,
 )
 from src.data.conditioning import make_cond
 from src.data.hecktor2026 import Hecktor2026Adapter
@@ -66,7 +74,7 @@ def world(tmp_path_factory):
 
 
 def test_train_items_have_two_normalised_channels_k3_labels_and_zscored_spacing(world):
-    cfg, split, stats, cache = world
+    cfg, split, stats, _cache = world
     ds = build_acf_datasets(cfg)
     assert isinstance(ds["train"], AcfCropDataset) and isinstance(ds["val"], AcfVolumeDataset)
     assert {p for d in ds.values() for p in [s["patient_id"] for s in d.samples]} == {p for k in split if not k.startswith("_") for p in split[k]}
@@ -85,7 +93,7 @@ def test_train_items_have_two_normalised_channels_k3_labels_and_zscored_spacing(
 def test_pet_channel_is_scaled_by_the_per_case_scale_and_is_unit_free(world):
     cfg, split, _, cache = world
     pid = split["val"][0]
-    h, arr = crop_cache.open_case(cache / f"{pid}.acf")
+    _h, arr = crop_cache.open_case(cache / f"{pid}.acf")
     sc = pet_scale(arr["ct"], arr["pet"])
     ds = build_acf_datasets(cfg)["val"]
     item = next(ds[i] for i in range(len(ds)) if ds.samples[i]["patient_id"] == pid)
@@ -114,7 +122,7 @@ def test_native_val_item_carries_native_label_and_affine(world):
 
 
 def test_resampled_mode_gives_the_fixed_target_spacing_for_every_case(world):
-    cfg, split, stats, cache = world
+    cfg, _split, stats, cache = world
     cfg = copy.deepcopy(cfg)
     cfg["data"]["mode"] = "resampled"
     ds = build_acf_datasets(cfg)
@@ -141,7 +149,7 @@ def test_resample_volume_preserves_a_blob_position_and_constant_fields():
 
 
 def test_sidecar_scales_match_computed_scales(world, tmp_path):
-    cfg, split, _, cache = world
+    _cfg, split, _, cache = world
     pids = split["val"][:2]
     sc = write_scale_sidecar(cache, pids)
     assert (cache / "pet_scale.json").exists()
@@ -156,7 +164,7 @@ def test_real_cases_block_and_normal_end_up_on_the_same_scale():
     """MDA-410 (inside the MDA-402..447 block, header PET max 91,587, stored float32) versus CHUM-001 (normal)."""
     out = {}
     for pid in ("MDA-410", "CHUM-001"):
-        h, arr = crop_cache.open_case(REAL / f"{pid}.acf")
+        _h, arr = crop_cache.open_case(REAL / f"{pid}.acf")
         raw = np.asarray(arr["pet"]).astype(np.float32)
         sc = pet_scale(arr["ct"], arr["pet"])
         lab = np.asarray(arr["label"]) > 0
@@ -208,7 +216,7 @@ def test_committed_real_split_matches_the_decision():
 
 def test_sidecar_is_resumable_detects_stale_files_and_is_used_by_the_dataset(world, monkeypatch):
     import src.data.acf_dataset as m
-    cfg, split, _, cache = world
+    cfg, _split, _, cache = world
     cache = Path(cache)
     (cache / "pet_scale.json").unlink(missing_ok=True)
     m._SCALES.clear()
@@ -244,3 +252,14 @@ def test_sidecar_is_resumable_detects_stale_files_and_is_used_by_the_dataset(wor
     d["rule"]["percentile"] = 90.0
     (cache / "pet_scale.json").write_text(json.dumps(d))
     assert m.load_sidecar(cache) == {}
+
+
+def test_pet_is_clipped_to_zero_and_twenty_after_scaling_by_default():
+    from src.data.acf_dataset import _normalise
+
+    ct = np.zeros((1, 1, 4), np.float32)
+    pet = np.array([[[-0.001, 1.0, 10.0, 500.0]]], np.float32)
+    _, p = _normalise(ct, pet, 2.0)
+    assert p.ravel().tolist() == [0.0, 0.5, 5.0, 20.0]
+    _, p = _normalise(ct, pet, 2.0, clip_max=None)
+    assert p.ravel().tolist() == [0.0, 0.5, 5.0, 250.0]

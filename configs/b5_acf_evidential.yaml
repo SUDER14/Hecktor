@@ -1,5 +1,5 @@
 # B5: B4 + evidential (Dirichlet) head
-# Placeholders to confirm once real data is available: split.test_centres, intensity.pet.suv_clip_max (SUV assumed).
+# Placeholder to confirm: intensity.pet.suv_clip_max (SUV assumed). test_centres CHUS+CHUV matches configs/splits/hecktor2026_seed42.json; K=3 (raw labels 0,1,2 kept; data.label_map unset = identity).
 # loader_batch_size * patch.num_samples must be divisible by train.micro_batch_size; effective batch = micro * accum = 8.
 seed: 42
 dataset: hecktor2026
@@ -7,7 +7,8 @@ data_dir: E:/HECKTOR/HECKTOR 2026 Training Data.zip   # read in place; never ext
 split:
   strategy: group_by_centre
   test_centres:
-  - MDA
+  - CHUS
+  - CHUV
   val_frac: 0.2
   path: configs/splits/hecktor2026_seed42.json
 conditioning:
@@ -17,7 +18,7 @@ data:
   pet_mode: rederived   # PET re-derived from the CT-grid PET: an APPROXIMATION of the acquisition grid, not native PET
   pet_spacing: [4.0, 4.0, 4.0]
 cache:
-  dir: D:/hecktor_cache/rederived_native   # outside the repo; one folder per preprocessing variant
+  dir: D:/hecktor_cache   # outside the repo; native .acf cache, resampled mode resamples at read time
   dtype: float16
 patch:
   spatial_size:
@@ -57,7 +58,7 @@ model:
   - 32
   - 64
   pet_offset: 2
-  out_channels: 2
+  out_channels: 3
   head: evidential
   conditioning_zeroed: false
 loss:

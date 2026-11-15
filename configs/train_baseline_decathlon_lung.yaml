@@ -1,8 +1,7 @@
 # Training config for Baseline 1 (plain single-modality 3D U-Net) on Task06_Lung.
 #
-# Reuses the already-validated split and conditioning stats from
-# configs/data_decathlon_lung.yaml (same seed, same split/stats file paths) so
-# train/val/test membership is identical across data-loading and training.
+# Uses the committed Decathlon split and conditioning stats files (seed 42) so
+# train/val/test membership is fixed.
 #
 # Unlike ACF's own config, this one carries a "baseline" block: Baseline 1 is a
 # plain, non-spacing-conditioned U-Net, so its data pipeline resamples to a

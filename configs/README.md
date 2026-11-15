@@ -32,5 +32,5 @@ Values marked as placeholders in each file (`split.test_centres`, `intensity.pet
 must be confirmed against the real HECKTOR data once available. `n_epochs: 100` is a plan, not a
 measured requirement. Test-centre choice must not be only tiny centres (HMR, USZ).
 
-Other configs: `synth_native.yaml` (synthetic cohort), `cpu_smoke*.yaml`, `*decathlon*` (earlier
+Other configs: `synth_native.yaml` (synthetic cohort), `cpu_smoke.yaml`, `*decathlon*` (earlier
 CT-only Decathlon baseline work).

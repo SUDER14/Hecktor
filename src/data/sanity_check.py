@@ -2,7 +2,7 @@
 overlays (image + label) so a human can eyeball them before training anything.
 
 Usage:
-    python -m src.data.sanity_check --config configs/data_decathlon_lung.yaml --n 5
+    python -m src.data.sanity_check --config <a single-modality config> --n 5
 """
 
 from __future__ import annotations

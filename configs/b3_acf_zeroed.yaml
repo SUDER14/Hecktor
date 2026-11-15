@@ -1,4 +1,5 @@
 # B3: ACF at native spacing, conditioning vector zeroed (ablation)
+# PARKED (2026-11-15): pet_mode rederived is not wired to the .acf cache and is dropped for now. Run configs/shared_b3_acf_zeroed.yaml instead.
 # Placeholder to confirm: intensity.pet.suv_clip_max (SUV assumed). test_centres CHUS+CHUV matches configs/splits/hecktor2026_seed42.json; K=3 (raw labels 0,1,2 kept; data.label_map unset = identity).
 # loader_batch_size * patch.num_samples must be divisible by train.micro_batch_size; effective batch = micro * accum = 8.
 seed: 42

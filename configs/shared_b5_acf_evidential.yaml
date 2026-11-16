@@ -74,6 +74,11 @@ train:
   num_workers: 2
   val_every: 5
   device: auto
+steps:   # used by scripts/train.py (step-based trainer); src.training.run ignores this block
+  max_steps: 14800   # optimiser steps = train.n_epochs 100 x 592 cases x 2 crops / effective batch 8; NOT tuned, see NEEDS_DECISION
+  val_every: 2000   # optimiser steps between validations on the fixed subset
+  val_subset_cases: 20   # fixed validation subset; all 67 validation cases are scored once at the end
+  ckpt_every_minutes: 20
 scheduler:
   name: cosine
   eta_min: 1.0e-06

@@ -19,6 +19,7 @@ on a GPU cuDNN is not bit-reproducible, so "identical" is only claimed for the C
 
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import json
@@ -54,7 +55,22 @@ HOSTED_ENV = ("COLAB_RELEASE_TAG", "COLAB_GPU", "KAGGLE_KERNEL_RUN_TYPE")   # se
 
 
 def sha256_file(path) -> str:
+    """Raw bytes. For binary files only."""
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def sha256_text(path) -> str:
+    """sha256 of a TEXT file after CRLF -> LF, the same rule as src/eval/locked_test.py. One commit is checked out
+    with LF on Colab and with CRLF on Windows, so a hash of the raw bytes would call one split file two files.
+    Used for the config, the split and the conditioning statistics."""
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _repo_relative(path) -> str:
+    """Repo-relative POSIX path when the file is inside the repository, else only its name: no machine path is
+    written into a checkpoint or a manifest."""
+    p = Path(path).resolve()
+    return p.relative_to(ROOT).as_posix() if ROOT in p.parents else p.name
 
 
 def _atomic_text(path: Path, text: str) -> None:
@@ -222,12 +238,31 @@ def _truncate_csv(path: Path, max_step: int) -> None:
 
 # ------------------------------------------------------------------------------------------------------- train
 def prepare_config(config_path: Path, overrides: list[str]) -> dict:
+    """The config that is stored in checkpoints: portable, with no path of this machine. Split and statistics
+    stay repo-relative; the cache folder, the zip path and the old run folder are blanked (the cache comes from
+    --data-root at run time, see `runtime_config`)."""
     cfg = apply_overrides(yaml.safe_load(Path(config_path).read_text(encoding="utf-8")), overrides)
-    for sec, key in (("split", "path"), ("conditioning", "stats_path")):   # repo-relative, wherever we are run from
-        cfg[sec][key] = str((ROOT / cfg[sec][key]).resolve()) if not Path(cfg[sec][key]).is_absolute() else cfg[sec][key]
+    for sec, key in (("split", "path"), ("conditioning", "stats_path")):
+        if Path(cfg[sec][key]).is_absolute():
+            raise SystemExit(f"{config_path}: {sec}.{key} must be a path relative to the repository, got {cfg[sec][key]}")
+        cfg[sec][key] = Path(cfg[sec][key]).as_posix()
+    cfg.setdefault("cache", {})["dir"] = None
+    if "data_dir" in cfg:
+        cfg["data_dir"] = None
+    if isinstance(cfg.get("run"), dict) and "dir" in cfg["run"]:
+        cfg["run"]["dir"] = None
     if "steps" not in cfg:
         raise SystemExit(f"{config_path} has no `steps:` block (max_steps, val_every, val_subset_cases, ckpt_every_minutes)")
     return cfg
+
+
+def runtime_config(cfg: dict, data_root: Path | None) -> dict:
+    """A copy for THIS machine (absolute split / statistics paths, the cache folder given now). Never saved."""
+    rt = copy.deepcopy(cfg)
+    for sec, key in (("split", "path"), ("conditioning", "stats_path")):
+        rt[sec][key] = str(ROOT / cfg[sec][key])
+    rt["cache"]["dir"] = None if data_root is None else str(data_root)
+    return rt
 
 
 def check_environment(synthetic: bool) -> dict:
@@ -256,7 +291,7 @@ def train(config_path, data_root, out_root, resume: str = "auto", synthetic: boo
         if data_root is None:
             raise SystemExit("--data-root (the folder holding the .acf cache) is required unless --synthetic")
         data_root = Path(data_root)
-        cfg["cache"]["dir"] = str(data_root)
+    rt = runtime_config(cfg, None if synthetic else data_root)
     st, t = cfg["steps"], cfg["train"]
     seed = int(cfg["seed"])
     seed_everything(seed)
@@ -267,7 +302,7 @@ def train(config_path, data_root, out_root, resume: str = "auto", synthetic: boo
     ckpt_dir = run_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    train_ds, val_ds = build_datasets(cfg, data_root, synthetic)
+    train_ds, val_ds = build_datasets(rt, data_root, synthetic)
     val_ids = [f"SYN-{i:03d}" for i in range(len(val_ds))] if synthetic else [s["patient_id"] for s in val_ds.samples]
     subset = val_subset(val_ids, int(st["val_subset_cases"]), seed)
     lbs, mbs, accum = int(t["loader_batch_size"]), int(t["micro_batch_size"]), int(t["accum_steps"])
@@ -283,7 +318,7 @@ def train(config_path, data_root, out_root, resume: str = "auto", synthetic: boo
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps, eta_min=cfg.get("scheduler", {}).get("eta_min", 0.0))
     scaler = GradScaler(device=dev.type, enabled=use_amp)
 
-    ident = {"config_sha256": sha256_file(config_path), "overrides": list(overrides), "synthetic": synthetic}
+    ident = {"config_sha256": sha256_text(config_path), "overrides": list(overrides), "synthetic": synthetic}
     s = {"step": 0, "pass": 1, "fetch": 0, "best_score": -1.0, "best_step": None, "elapsed_s": 0.0, "final_val": None}
     pending_rng = None
     have = step_checkpoints(ckpt_dir)
@@ -305,8 +340,8 @@ def train(config_path, data_root, out_root, resume: str = "auto", synthetic: boo
 
     manifest = {
         "name": name, "synthetic": synthetic, "git_commit": git["commit"], "git_dirty": git["dirty"], **ident,
-        "config": str(config_path), "split_sha256": None if synthetic else sha256_file(cfg["split"]["path"]),
-        "conditioning_stats_sha256": None if synthetic else sha256_file(cfg["conditioning"]["stats_path"]),
+        "config": _repo_relative(config_path), "split_sha256": None if synthetic else sha256_text(rt["split"]["path"]),
+        "conditioning_stats_sha256": None if synthetic else sha256_text(rt["conditioning"]["stats_path"]),
         "n_train": len(train_ds), "n_val": len(val_ds), "val_subset_ids": [val_ids[i] for i in subset],
         "test_set_loaded": False, "seed": seed, "max_steps": max_steps, "device": str(dev),
         "gpu_name": torch.cuda.get_device_name(0) if dev.type == "cuda" else None,

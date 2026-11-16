@@ -29,6 +29,8 @@ def test_train_synthetic_then_evaluate_synthetic(tmp_path):
     for key in ("model_state", "config", "step", "best_score"):
         assert key in ck, key
     _model, cfg, info = locked_test.load_best(run_dir, torch.device("cpu"))
+    _no_machine_path(ck["config"])                      # nothing of the training machine is stored in best.pt
+    assert str(tmp_path) not in json.dumps(ck["config"]) and str(tmp_path) not in json.dumps(m["config"])
     assert info["step"] == 2 and cfg["model"]["name"] == "acf"
 
     res = locked_test.evaluate(run_dir, None, tmp_path / "eval", synthetic=True, device="cpu")
@@ -39,17 +41,47 @@ def test_train_synthetic_then_evaluate_synthetic(tmp_path):
     assert len(pd.read_csv(res / "per_case.csv")) >= 5
 
 
-def test_real_run_manifest_hashes_match_what_the_test_script_recomputes(tmp_path):
+def _no_machine_path(obj, where=""):
+    """No absolute path (drive letter, leading slash or backslash) anywhere in a stored config."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _no_machine_path(v, f"{where}.{k}")
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _no_machine_path(v, where)
+    elif isinstance(obj, str):
+        assert not Path(obj).is_absolute() and ":" not in obj[:3] and "\\" not in obj, f"{where} = {obj!r}"
+
+
+def test_trainer_text_hashes_do_not_depend_on_line_endings(tmp_path):
+    lf, crlf = tmp_path / "lf.json", tmp_path / "crlf.json"
+    lf.write_bytes(b'{\n "train": ["a"]\n}\n')
+    crlf.write_bytes(b'{\r\n "train": ["a"]\r\n}\r\n')
+    assert portable.sha256_text(lf) == portable.sha256_text(crlf) == locked_test.sha256_text(crlf)
+    assert portable.sha256_file(lf) != portable.sha256_file(crlf)          # the raw-byte hash is what used to be recorded
     split = ROOT / "configs" / "splits" / "hecktor2026_seed42.json"
     stats = ROOT / "configs" / "splits" / "hecktor2026_seed42_conditioning_stats.json"
-    assert portable.sha256_file(split) == locked_test.sha256_file(split)
+    assert portable.sha256_text(split) == locked_test.sha256_text(split)
+    # a manifest written by the trainer passes the test script's check as it stands
     run = tmp_path / "r"
     run.mkdir()
-    (run / "manifest.json").write_text(json.dumps({"finished": True, "synthetic": False, "split_sha256": portable.sha256_file(split),
-                                                   "conditioning_stats_sha256": portable.sha256_file(stats)}))
+    (run / "manifest.json").write_text(json.dumps({"finished": True, "synthetic": False, "split_sha256": portable.sha256_text(split),
+                                                   "conditioning_stats_sha256": portable.sha256_text(stats)}))
     assert locked_test._check_run_manifest(run, split, stats)["finished"]
-    # a checkpoint config written on another machine stores that machine's path; the local file is found by name
-    assert locked_test._local_split_file("/content/Hecktor/configs/splits/hecktor2026_seed42.json") == split
+
+
+def test_stored_config_has_no_machine_path_and_the_runtime_copy_has(tmp_path):
+    cfg = portable.prepare_config(ROOT / "configs" / "shared_b1_unet_resample.yaml", [])
+    _no_machine_path(cfg)
+    assert cfg["split"]["path"] == "configs/splits/hecktor2026_seed42.json" and cfg["cache"]["dir"] is None
+    assert cfg.get("data_dir") is None and cfg["run"]["dir"] is None
+    rt = portable.runtime_config(cfg, tmp_path)
+    assert Path(rt["split"]["path"]).is_file() and rt["cache"]["dir"] == str(tmp_path) and cfg["cache"]["dir"] is None
+    # the test script turns the stored config into a local one without complaint, and it points at this checkout
+    loc = locked_test.localise_config(cfg, tmp_path)
+    assert (ROOT / loc["split"]["path"]).is_file() and (ROOT / loc["conditioning"]["stats_path"]).is_file()
+    assert portable._repo_relative(ROOT / "configs" / "shared_b1_unet_resample.yaml") == "configs/shared_b1_unet_resample.yaml"
+    assert portable._repo_relative(tmp_path / "x.yaml") == "x.yaml"
 
 
 def test_sliding_window_returns_the_model_probabilities_not_a_second_softmax():

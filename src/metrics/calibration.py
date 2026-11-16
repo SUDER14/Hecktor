@@ -127,3 +127,88 @@ def brier(prob: np.ndarray, labels: np.ndarray, roi: np.ndarray | None = None) -
         return float("nan")
     p_true = p[y, np.arange(y.size)]
     return float(((p ** 2).sum(axis=0) - 2.0 * p_true + 1.0).mean())
+
+
+# --- added for the locked test script (docs/ANALYSIS_PLAN.md section 7) -------------------------------------
+def nll(prob: np.ndarray, labels: np.ndarray, roi: np.ndarray | None = None, eps: float = 1e-12) -> float:
+    """Mean negative log-likelihood of the true class, -log p_y, natural log. prob (K, ...), labels (...).
+    Probabilities are clamped at `eps` so one voxel with p_y = 0 gives -log(eps), not infinity. NaN if no voxels."""
+    prob = np.asarray(prob)
+    labels = np.asarray(labels).astype(np.int64)
+    if prob.shape[1:] != labels.shape:
+        raise ValueError(f"shape mismatch: prob {prob.shape} vs labels {labels.shape}")
+    p_true = np.take_along_axis(prob, labels[None], axis=0)[0]
+    if roi is not None:
+        p_true = p_true[np.asarray(roi).astype(bool)]
+    if p_true.size == 0:
+        return float("nan")
+    return float(-np.log(np.clip(p_true.astype(np.float64), eps, None)).mean())
+
+
+def apply_temperature(prob: np.ndarray, temperature: float, eps: float = 1e-12) -> np.ndarray:
+    """p_T proportional to p^(1/T), renormalised over the class axis 0. For one softmax output this equals
+    softmax(logits / T) exactly. For sliding-window output (probabilities averaged over overlapping windows) the
+    logits no longer exist, so this is temperature scaling of the log of the averaged probability; say so
+    wherever a temperature-scaled number is reported."""
+    lp = np.log(np.clip(np.asarray(prob, dtype=np.float32), eps, None)) / np.float32(temperature)
+    lp -= lp.max(axis=0, keepdims=True)
+    e = np.exp(lp)
+    return e / e.sum(axis=0, keepdims=True)
+
+
+def nll_sum_on_grid(prob: np.ndarray, labels: np.ndarray, grid) -> np.ndarray:
+    """SUM over voxels of -log p_T[y] for every temperature in `grid`. Sums (not means) so that cases can be
+    added before the temperature is chosen: the fit is over all validation voxels, not a mean of case means."""
+    prob = np.asarray(prob, dtype=np.float32)
+    labels = np.asarray(labels).astype(np.int64)
+    out = np.zeros(len(grid), np.float64)
+    for i, t in enumerate(grid):
+        out[i] = nll(apply_temperature(prob, float(t)), labels) * labels.size
+    return out
+
+
+def fit_temperature(nll_sums: np.ndarray, grid) -> tuple[float, bool]:
+    """(temperature with the smallest summed NLL on the grid, at_edge). at_edge=True means the minimum sits on
+    the first or last grid point, so the true minimum may lie outside the grid; report it, do not hide it."""
+    i = int(np.argmin(nll_sums))
+    return float(np.asarray(grid)[i]), i in (0, len(grid) - 1)
+
+
+def u_histograms(uncertainty: np.ndarray, pred: np.ndarray, label: np.ndarray, n_bins: int = 1000,
+                 roi: np.ndarray | None = None) -> dict:
+    """Counts of wrong and of correct voxels per uncertainty bin on [0, 1]. Histograms add across cases, which is
+    what lets a pooled AUC and a pooled risk-coverage curve be computed without holding every voxel in memory.
+    The price is that ties inside one bin (width 1 / n_bins) are not ordered."""
+    u = np.clip(np.asarray(uncertainty, dtype=np.float64), 0.0, 1.0)
+    wrong = np.asarray(pred).astype(np.int64) != np.asarray(label).astype(np.int64)
+    if roi is not None:
+        m = np.asarray(roi).astype(bool)
+        u, wrong = u[m], wrong[m]
+    idx = np.minimum((u.ravel() * n_bins).astype(np.int64), n_bins - 1)
+    w = wrong.ravel()
+    return {"wrong": np.bincount(idx[w], minlength=n_bins).astype(np.float64),
+            "right": np.bincount(idx[~w], minlength=n_bins).astype(np.float64)}
+
+
+def auroc_from_histograms(wrong: np.ndarray, right: np.ndarray) -> float:
+    """P(u_wrong > u_right) + 0.5 P(same bin). NaN when either group is empty."""
+    wrong, right = np.asarray(wrong, float), np.asarray(right, float)
+    nw, nr = wrong.sum(), right.sum()
+    if nw == 0 or nr == 0:
+        return float("nan")
+    right_below = np.cumsum(right) - right          # correct voxels in strictly lower bins
+    return float((wrong * (right_below + 0.5 * right)).sum() / (nw * nr))
+
+
+def risk_coverage_from_histograms(wrong: np.ndarray, right: np.ndarray) -> dict:
+    """Keep voxels from the most certain bin upward. coverage[i] = fraction of voxels kept after bin i,
+    risk[i] = error rate among them. aurc = area under risk against coverage (trapezoid; lower is better)."""
+    wrong, right = np.asarray(wrong, float), np.asarray(right, float)
+    kept, bad = np.cumsum(wrong + right), np.cumsum(wrong)
+    total = kept[-1] if len(kept) else 0.0
+    if total == 0:
+        return {"coverage": np.array([]), "risk": np.array([]), "aurc": float("nan")}
+    ok = kept > 0
+    cov, risk = kept[ok] / total, bad[ok] / kept[ok]
+    aurc = float(np.sum((cov[1:] - cov[:-1]) * (risk[1:] + risk[:-1]) / 2.0) + cov[0] * risk[0])
+    return {"coverage": cov, "risk": risk, "aurc": aurc}

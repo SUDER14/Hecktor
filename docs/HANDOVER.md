@@ -99,8 +99,8 @@ Half-done or not started:
   check with `--synthetic` is for the owner to run (steps in `notebooks/colab_train.ipynb`).
 - `steps.max_steps: 14800` in the six configs only restates the old 100 epochs; not tuned. Number of
   seeds not decided (`NEEDS_DECISION.txt` item 9).
-- The script that joins `results/test/<run>/per_case.csv` of several runs and applies the five planned
-  comparisons is not written (`src/eval/stats.py: compare_models` is the tested building block).
+- `scripts/analyse.py` (the five planned comparisons plus nnU-Net, from `results/test/<run>/per_case.csv`
+  to `results/stats/comparisons.csv`) is written and tested on synthetic tables only; it has read no real result.
 - `src/eval/experiments.py` E1-E4 use the old two-grid loader; do not use them for the shared-PET runs.
 - `CLAUDE.md` still describes the Decathlon stage and Colab-plus-Drive checkpointing; it is out of date
   (`NEEDS_DECISION.txt` item 7).

@@ -1,44 +1,141 @@
-# Handover notes (branch `fable/first-run`)
+# Handover (branch `fable/first-run`)
 
-State as of 2026-11-15. Nothing here is a result; no model has been trained on a GPU.
+State on 2026-11-16. Read this first; it replaces the conversation that produced the branch.
+Nothing in this repository is a result: no model has been trained on a GPU and no model output has
+been computed on a test case. `main` is untouched (c7d16b6). Do not merge into `main`.
 
-## Standing rule
+## Rules that must not be broken
 
-Keep the repo and any HECKTOR file out of synced folders (OneDrive, Google Drive G:, Dropbox).
-The repo lives at `D:\misc\Hecktor`; the cache lives at `D:\hecktor_cache`.
+- Licence: no HECKTOR file (image, label, cache, clinical CSV, prediction) leaves the owner's machine.
+  Keep the repo and any HECKTOR file out of synced folders (OneDrive, Google Drive G:, Dropbox).
+  Real data on Colab or Kaggle only after written permission from the data provider; the code refuses it
+  unless `ALLOW_REAL_DATA=1`.
+- The test set (CHUS 72 + CHUV 51 = 123 cases) is touched only by `scripts/evaluate_test.py`, once per
+  model, after `docs/ANALYSIS_PLAN.md` is committed. It informs no decision.
+- Before every push: `git ls-files` must show nothing from `results/`, no CSV, no cache file, no image.
+- This machine: 7.8 GB RAM, 4 cores, no GPU. One heavy job at a time, under a 6.5 GB RAM guard.
+- Never invent a number. Never weaken a check to make it pass. Spacing-conditioned hypernetworks are
+  prior art (HyperSpace, MICCAI 2024); do not call them novel.
 
-## What to run
+## Decisions and why
 
-Use `configs/shared_b1..b5` and `shared_b2b` (pet_mode shared, `.acf` cache, K = 3, test centres
-CHUS + CHUV). The `configs/b1..b5` and `b2b` family (pet_mode rederived) is parked: rederived
-mode is not wired to the `.acf` cache and has been dropped for now.
+- Split: `configs/splits/hecktor2026_seed42.json`, 592 train / 67 validation / 123 test. Test = two whole
+  centres, so the test measures transfer to unseen centres. Conditioning statistics are fitted on the 592
+  training cases only (`..._conditioning_stats.json`).
+- K = 3 (labels 0, 1, 2). What labels 1 and 2 denote clinically is NOT verified from the dataset
+  documentation; all code and documents refer to them by number.
+- Crop rule: each case is stored as a cropped `.acf` file (782 files in `D:\hecktor_cache`, outside the
+  repo). Rule and checks: `src/data/crop_rule.py`, `scripts/crop_verify.py`, `docs/DATA_REPORT.md`.
+- PET rule: divide by the per-case 99.5th percentile of positive PET inside CT > -500 HU (sidecar
+  `pet_scale.json` in the cache folder), then clip to [0, 20]. CT: clip [-1000, 1000] HU, scale to [0, 1].
+  One rule for every case.
+- pet_mode: shared only (CT and PET as two channels on one grid). The rederived-PET mode was dropped by
+  the owner; `configs/b1..b5`, `b2b` are parked. Run `configs/shared_b*.yaml`.
+- B1, B2, B2b run on a resampled grid (0.9766 x 0.9766 x 3.27 mm, the training median), resampled at load
+  time; the stored resampled cache was not built (projected 35.3 GB, over the 30 GB limit).
+  `scripts/build_resampled_cache.py` can build it later. Predictions are mapped back to the native grid
+  before scoring. A perfect resampled prediction scores foreground Dice 0.9025 / 1.0000 / 0.9883 after
+  mapping back on three training cases (z 1.25 / 3.27 / 5.0 mm): a ceiling the resampled baselines pay.
+- Statistics: paired Wilcoxon by case, Holm over five comparisons, primary B4 against B3
+  (`docs/ANALYSIS_PLAN.md`). Holm replaced the proposal's Bonferroni.
 
-## Done and verified
+## Done, with commit
 
-- Phase 1 cleanup (commit 4eea17e).
-- Phase 2 audit: `results/fable_run/AUDIT.txt` (782 cache files, no inf/NaN, split 592/67/123,
-  conditioning stats fitted on the 592 training cases only).
-- PET is divided by its per-case scale and clipped to [0, 20] by one rule for every case (commit 75fea66).
+| Phase | Commit | What |
+|---|---|---|
+| 1 cleanup | 4eea17e | dead Decathlon files removed, audit scripts |
+| 2 audit | (no commit, `results/fable_run/AUDIT.txt`) | 782 files, no inf/NaN, split and stats verified |
+| 3 data pipeline (partial) | 75fea66, 5e05ec1 | PET clip, K = 3 configs, parked configs |
+| 4 correctness gates | 9d563f1, 76c722a | `scripts/phase4_gates.py`, results in `results/fable_run/gates.json` |
+| 5 analysis plan | f363575 | `docs/ANALYSIS_PLAN.md`, Holm in `src/eval/stats.py` |
+| 6 portable training | c9a6f88 | `scripts/train.py`, `src/training/portable.py`, `notebooks/colab_train.ipynb` |
+| 7 locked test script | 042c36e, merge e1b1d54 | `scripts/evaluate_test.py`, `src/eval/locked_test.py` (written on `fable/analysis`) |
+| 7 follow-up | the commit that adds this file | double-softmax fix, train-then-evaluate integration test |
+
+Phase 4 gates, latest real run of each: PASS for split leak, fresh-weights identity of B3 and B4,
+B5 head properties, same-seed repeat, resume, spacing sensitivity after 50 steps (B4 yes, B3 no),
+sliding window on one validation case for all six configs, foreground overfit for all six, per-label
+overfit for B1, B2, B2b, B3, B4. FAIL: per-label overfit for B5 (below).
+
+## B5 label-1 note (open)
+
+B5 (ACF + evidential head) does not learn label 1 on the fixed overfit batch: label 1 Dice 0.000 after
+212 steps (14 minutes), and again 0.000 after 170 steps with the KL term switched off. The 272 label-1
+voxels end up predicted as background; class-1 evidence there moved only 0.50 to 0.54. Ruled out by those
+runs: the KL schedule, label order, patch sampling. NOT established: the cause, and whether it is slow
+or stuck. Details: `results/fable_run/B5_note.txt`. Options (rescaled evidence, loss weights, first a
+lr 3e-3 run and a 60-minute run): `NEEDS_DECISION.txt` item 8. `scripts/phase4_b5_label1_diag.py` runs
+the diagnosis (`--only lr_3e-3` is the variant not yet run). Do not train B5 on a GPU until it passes
+`python scripts/phase4_gates.py --out results/fable_run/gates.json --only overfit_labels:shared_b5`.
+
+## Bug fixed late, worth knowing
+
+Sliding-window inference applied softmax twice for softmax heads (`src/eval/infer.py`): the predicted
+class was unchanged, but probabilities were flattened (0.976 became 0.567), which would have corrupted
+ECE, Brier, NLL, temperature and uncertainty for B1 to B4. Fixed with a regression test in
+`tests/test_train_then_evaluate.py`. No number had been produced with the bug.
 
 ## Not done
 
-Deferred by the owner (16 Nov 2026), not wanted now:
-
-- Phase 3 item 7: loader seconds per fetch, each path, 1 and 2 workers.
+Deferred by the owner (16 Nov 2026):
+- Phase 3 item 7: loader seconds per fetch for each path, 1 and 2 workers.
 - Phase 3 item 8: `docs/DATA_REPORT.md` update from script outputs.
-- Phase 8: timing notebook and nnU-Net preparation.
+- Phase 8: timing notebook (`notebooks/colab_timing.ipynb`) and nnU-Net preparation.
+Dropped by the owner: rederived PET mode.
+Not built by decision: stored resampled cache.
 
-Dropped by the owner: rederived PET mode (shared PET only).
+Half-done or not started:
+- Phase 9 (independent review): NOT done as a phase. A partial read-through found the double-softmax bug
+  (fixed). `results/review/REVIEW.txt` does not exist. Still to review: resume and gradient accumulation
+  under mixed precision on a real GPU, the lock in `locked_test.py`, B2b parameter matching.
+- Nothing has run on a GPU: no timing, no memory figure, no validation Dice. The Colab kill-and-resume
+  check with `--synthetic` is for the owner to run (steps in `notebooks/colab_train.ipynb`).
+- `steps.max_steps: 14800` in the six configs only restates the old 100 epochs; not tuned. Number of
+  seeds not decided (`NEEDS_DECISION.txt` item 9).
+- The script that joins `results/test/<run>/per_case.csv` of several runs and applies the five planned
+  comparisons is not written (`src/eval/stats.py: compare_models` is the tested building block).
+- `src/eval/experiments.py` E1-E4 use the old two-grid loader; do not use them for the shared-PET runs.
+- `CLAUDE.md` still describes the Decathlon stage and Colab-plus-Drive checkpointing; it is out of date
+  (`NEEDS_DECISION.txt` item 7).
+- Open decisions: `results/fable_run/NEEDS_DECISION.txt` items 2, 3, 4, 6, 7, 8, 9. That folder is not in
+  git; it lives only on the owner's machine.
 
-Not built, by decision: the stored resampled cache for B1/B2 (20-case projection 35.3 GB, over the
-30 GB limit). B1/B2 resample each cropped volume at load time instead (`data.mode: resampled`).
-`scripts/build_resampled_cache.py` can build the stored cache later on a machine with the disk for it.
+## Known risks and open questions
 
-Still open:
+- B5 as above. The B5-against-B4 comparison in the plan is conditional on B5 passing its gate.
+- The file hashes in a run manifest are of raw bytes. `.gitattributes` pins LF line endings for the
+  split, statistics, config and plan files so a run trained on Linux verifies on Windows; if a hash
+  check still refuses, compare line endings before suspecting the data.
+- Resume is bit-identical on CPU only (tested). On a GPU, cuDNN is not bit-reproducible.
+- The lock can be defeated by deleting `results/test/<run>/LOCK.json`; it is a guard against mistakes,
+  not against intent.
+- Label 1 is rare (2 to 3 percent of foreground in the gate batch); softmax models needed 90 to 160 steps
+  before label 1 Dice left zero on the overfit batch. Watch per-label validation Dice, not the mean alone.
+- The unseen-spacing subgroup (77 cases) contains all 72 CHUS cases, so spacing and centre cannot be
+  separated in that subgroup.
 
-- Phases 6, 7, 9 and 10 (see `results/fable_run/PROGRESS.txt` for the current phase).
-- B5 (evidential head) FAILS the Phase 4 per-label overfit gate: label 1 is not learned
-  (`results/fable_run/B5_note.txt`). Do not train B5 on a GPU until NEEDS_DECISION item 8 is settled.
-- `docs/ANALYSIS_PLAN.md` is the committed analysis plan (Holm, not Bonferroni). `src/eval/experiments.py`
-  E5/E6 follow it; E1-E4 still use the old two-grid loader and are replaced by the Phase 7 test script.
-- Open decisions: `results/fable_run/NEEDS_DECISION.txt` items 2, 3, 4, 6, 7, 8.
+## Commands
+
+Tests (about 10 minutes on this machine):
+    python -m pytest -q
+Cache audit (read-only):
+    python scripts/audit_cache.py --cache_dir D:/hecktor_cache --out results/fable_run/audit_cache.json --scan
+Cache build from the zip (already done; only if the cache is lost):
+    python scripts/build_hecktor_cache.py --help
+Correctness gates (CPU, about 2.5 hours for all):
+    python scripts/phase4_gates.py --out results/fable_run/gates.json
+One training run (clean git tree required):
+    python scripts/train.py --config configs/shared_b4_acf_cond.yaml --data-root D:/hecktor_cache --out-root <folder> --resume auto
+Whole loop without data:
+    python scripts/train.py --config configs/shared_b4_acf_cond.yaml --out-root <folder> --synthetic --set steps.max_steps=40 --set steps.val_every=20
+Locked test, once per finished run (clean tree, committed plan):
+    python scripts/evaluate_test.py --run-dir <folder>/runs/shared_b4_acf_cond_seed42 --data-root D:/hecktor_cache --out-root <folder outside the repo>
+
+## Exact next prompt
+
+"Resume on branch fable/first-run from docs/HANDOVER.md and results/fable_run/PROGRESS.txt. All rules in
+the handover apply. First settle NEEDS_DECISION item 8: run `python scripts/phase4_b5_label1_diag.py
+--out results/fable_run/b5_label1_diag.json --only lr_3e-3` (17 minutes), then decide the B5 fix and
+re-run the per-label gate for B5. Then do Phase 9 (read-only review, results/review/REVIEW.txt, fix and
+test every finding that changes results). Do not touch the test set. Do not merge into main. Report in
+plain text under 60 lines."

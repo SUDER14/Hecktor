@@ -64,3 +64,39 @@ def test_lock_cannot_be_bypassed_by_renaming_the_run_or_deleting_the_lock_file(t
         lt.acquire_lock(root / "runB", root, identb, None)
     assert lt.acquire_lock(root / "runB", root, identb, "lock file was removed by mistake") == "fresh"
     assert not (root / "runB" / "cases").exists() and len(list(root.glob("runB__superseded_*/cases/test/X.npz"))) == 1
+
+
+# R3 ------------------------------------------------------------------------- machine paths in checkpoint config
+MACHINE = ["split.path=/content/Hecktor/configs/splits/hecktor2026_seed42.json",
+           "conditioning.stats_path=/content/Hecktor/configs/splits/hecktor2026_seed42_conditioning_stats.json",
+           "cache.dir=/content/drive/MyDrive/acf_cache", "run.dir=/content/out/runs/x"]
+
+
+def test_checkpoint_config_paths_of_the_training_machine_are_not_used_or_recorded(tmp_path):
+    """scripts/train.py stores the config in best.pt with the training machine's absolute paths (split, statistics,
+    cache). The test script must use this checkout's files and the --data-root it was given, and its manifest
+    must not carry another machine's paths (or this machine's absolute folders)."""
+    import yaml
+
+    from src.eval import locked_test as lt
+    from src.training.train import apply_overrides
+
+    cfg = apply_overrides(yaml.safe_load((ROOT / "configs" / "shared_b1_unet_resample.yaml").read_text(encoding="utf-8")), MACHINE)
+    local = lt.localise_config(cfg, Path("D:/somewhere/cache"))
+    assert local["split"]["path"] == "configs/splits/hecktor2026_seed42.json"
+    assert local["conditioning"]["stats_path"] == "configs/splits/hecktor2026_seed42_conditioning_stats.json"
+    assert Path(local["cache"]["dir"]) == Path("D:/somewhere/cache") and local["run"]["dir"] is None and local["data_dir"] is None
+    assert cfg["cache"]["dir"] == "/content/drive/MyDrive/acf_cache"          # the input is not modified
+    assert lt.localise_config(cfg, None)["cache"]["dir"] is None
+    with pytest.raises(SystemExit, match="not in this checkout"):
+        lt.localise_config({**cfg, "split": {"path": "/content/other/my_split.json"}}, None)
+
+    small = ["patch.spatial_size=[32, 32, 32]", "patch.min_extent_mm=[8.0, 8.0, 8.0]", "infer.sw_batch_size=4"]
+    res = lt.evaluate(None, None, tmp_path, synthetic=True, config=ROOT / "configs" / "shared_b1_unet_resample.yaml",
+                      overrides=small + MACHINE, device="cpu", n_synthetic=(2, 1))
+    text = (res / "manifest.json").read_text(encoding="utf-8")
+    for bad in ("/content", "E:/HECKTOR", "hecktor_cache", tmp_path.name):
+        assert bad not in text, bad
+    man = json.loads(text)
+    assert man["checkpoint"] == "checkpoints/best.pt" and man["predictions_dir"] == f"test_predictions/{res.name}"
+    assert man["config"]["split"]["path"] == "configs/splits/hecktor2026_seed42.json"

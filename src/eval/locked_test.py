@@ -636,10 +636,24 @@ SYNTHETIC_STATS = {"CT": {"spacing_x": {"mean": 1.0, "std": 0.2}, "spacing_y": {
                           "slice_thickness": {"mean": 3.0, "std": 1.0}}}
 
 
-def _local_split_file(recorded: str) -> Path:
-    """The split / statistics file of THIS checkout with the recorded file name. A checkpoint written on another
-    machine stores that machine's absolute path; the sha256 check against the run manifest proves it is the same file."""
-    return ROOT / "configs" / "splits" / PurePosixPath(str(recorded).replace("\\", "/")).name
+def localise_config(cfg: dict, data_root: Path | None) -> dict:
+    """A copy of the checkpoint's config with every machine path replaced. scripts/train.py stores the config in
+    best.pt with the TRAINING machine's absolute paths; none of them may steer, or be recorded by, a test run
+    made elsewhere. Split and statistics become the repo-relative files of this checkout with the recorded
+    file name (the sha256 check against the run manifest proves they are the same files); the cache folder is
+    the --data-root given now; the zip path and the old run folder are not used here and are blanked."""
+    out = copy.deepcopy(cfg)
+    for sec, key in (("split", "path"), ("conditioning", "stats_path")):
+        rel = f"configs/splits/{PurePosixPath(str(cfg[sec][key]).replace(chr(92), '/')).name}"
+        if not (ROOT / rel).exists():
+            raise SystemExit(f"{cfg[sec][key]} (recorded in the checkpoint) is not in this checkout as {rel}")
+        out[sec][key] = rel
+    out.setdefault("cache", {})["dir"] = str(data_root) if data_root is not None else None
+    if "data_dir" in out:
+        out["data_dir"] = None
+    if isinstance(out.get("run"), dict) and "dir" in out["run"]:
+        out["run"]["dir"] = None
+    return out
 
 
 def load_best(run_dir: Path, device) -> tuple[torch.nn.Module, dict, dict]:
@@ -656,7 +670,7 @@ def load_best(run_dir: Path, device) -> tuple[torch.nn.Module, dict, dict]:
     model = build_model(cfg)
     model.load_state_dict(ck["model_state"])
     model.eval().to(device)
-    return model, cfg, {"checkpoint": str(best), "checkpoint_sha256": sha256_file(best), "step": ck.get("step"),
+    return model, cfg, {"checkpoint": "checkpoints/best.pt", "checkpoint_sha256": sha256_file(best), "step": ck.get("step"),
                         "best_validation_score": ck.get("best_score")}
 
 
@@ -716,6 +730,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
         results_root = Path(results_root) if results_root is not None else ROOT / "results" / "test"
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, cfg, ck = load_best(run_dir, dev)
+    cfg = localise_config(cfg, data_root)   # no path of the training machine is used or written from here on
     name = run_dir.name
     k = cfg["model"]["out_channels"]
     use_amp = bool(cfg["train"].get("amp", True)) and dev.type == "cuda"
@@ -732,7 +747,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
         from src.data.acf_dataset import AcfVolumeDataset
         from src.data.splits import load_split
 
-        split_path, stats_path = _local_split_file(cfg["split"]["path"]), _local_split_file(cfg["conditioning"]["stats_path"])
+        split_path, stats_path = ROOT / cfg["split"]["path"], ROOT / cfg["conditioning"]["stats_path"]
         run_manifest = _check_run_manifest(run_dir, split_path, stats_path)
         split, stats = load_split(split_path), load_stats(stats_path)
         leak = set(split["test"]) & (set(split["train"]) | set(split["val"]))
@@ -796,7 +811,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
         "n_test": len(test_ids), "n_val": len(val_ids), "test_ids": test_ids, "sweep_mm": list(SWEEP_MM),
         "wrong_spacing_seed": WRONG_SPACING_SEED if perm is not None else None, "device": str(dev),
         "gpu_name": torch.cuda.get_device_name(0) if dev.type == "cuda" else None, "amp": use_amp,
-        "predictions_dir": str(pred_dir) if pred_dir else None, "rerun_reason": rerun, "resumed": mode == "resume",
+        "predictions_dir": f"test_predictions/{name}" if pred_dir else None, "rerun_reason": rerun, "resumed": mode == "resume",
         "finished": time.strftime("%Y-%m-%dT%H:%M:%S"), "seconds_this_session": round(time.time() - t_start, 1),
         "versions": {"python": platform.python_version(), "torch": torch.__version__, "numpy": np.__version__,
                      "pandas": pd.__version__, "platform": platform.platform()}})
@@ -870,7 +885,7 @@ def evaluate_predictions(pred_dir: Path, name: str, data_root: Path | None, out_
                                   "spacing_z": sp[2], **seg_row(pred, label, sp, k), "mean_u_all": float("nan"),
                                   "mean_u_roi": float("nan"), "unc_auroc_roi": float("nan")}}, {})
     write_outputs(res_dir, name, k, [pid for pid, _ in cases], [], train_keys, None)
-    _atomic_json(res_dir / "manifest.json", {**identity, "kind": "external predictions (label maps)", "pred_dir": str(pred_dir),
+    _atomic_json(res_dir / "manifest.json", {**identity, "kind": "external predictions (label maps)", "pred_dir": pred_dir.name,
                                              "n_test": len(cases), "rerun_reason": rerun, "resumed": mode == "resume",
                                              "finished": time.strftime("%Y-%m-%dT%H:%M:%S")})
     lock = json.loads((res_dir / "LOCK.json").read_text(encoding="utf-8"))

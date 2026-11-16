@@ -58,11 +58,19 @@ def aggregated_dice(preds: Sequence[np.ndarray], labels: Sequence[np.ndarray]) -
     """
     if len(preds) != len(labels):
         raise ValueError(f"{len(preds)} predictions vs {len(labels)} labels")
-    inter = total = 0
+    inter, pred_n, label_n = [], [], []
     for p, t in zip(preds, labels):
         p, t = np.asarray(p).astype(bool), np.asarray(t).astype(bool)
         if p.shape != t.shape:
             raise ValueError(f"shape mismatch: pred {p.shape} vs label {t.shape}")
-        inter += int((p & t).sum())
-        total += int(p.sum()) + int(t.sum())
+        inter.append(int((p & t).sum()))
+        pred_n.append(int(p.sum()))
+        label_n.append(int(t.sum()))
+    return aggregated_dice_from_counts(inter, pred_n, label_n)
+
+
+def aggregated_dice_from_counts(inter, pred_n, label_n) -> float:
+    """The same aggregated Dice from per-case voxel counts (|P and L|, |P|, |L|). The test script stores these
+    three integers per case instead of 123 full-size masks, and the bootstrap over cases resamples them."""
+    inter, total = int(np.sum(inter)), int(np.sum(pred_n)) + int(np.sum(label_n))
     return float(2.0 * inter / total) if total else float("nan")

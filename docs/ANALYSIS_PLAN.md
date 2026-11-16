@@ -124,7 +124,22 @@ cannot be attributed to spacing rather than to centre. This is stated wherever a
   mean u on test against validation (reported with a bootstrap interval of the difference in case means);
   Spearman correlation across test cases between mean u and (1 - per-case mean Dice).
 
-CODED: ECE, Brier, reliability bins, AUC. PLANNED: NLL, temperature scaling, risk-coverage curve.
+CODED (2026-11-16, `src/metrics/calibration.py`, `src/eval/locked_test.py`, tests in
+`tests/test_evaluate_test.py`): ECE, Brier, NLL, reliability bins, temperature scaling, AUC, risk-coverage curve.
+
+Choices fixed when the test script was written, before any result exists:
+
+- Temperature: chosen on a grid of 41 values, log-spaced from 0.25 to 4, by the summed NLL over all voxels of
+  the 67 validation cases. Sliding-window inference averages probabilities over overlapping windows, so the
+  logits no longer exist; the temperature is applied to the log of the averaged probability
+  (p_T proportional to p^(1/T)). A minimum on the edge of the grid is reported as such.
+- The validation pass (in-distribution calibration) is run for B4 and B5 only. For the other models the
+  calibration numbers on test are written too, because they cost nothing, but they are not part of the plan.
+- Pooled AUC and the risk-coverage curve are computed from histograms of u with 1,000 bins, added over cases;
+  ties inside one bin are not ordered. The per-case AUC is exact.
+- "Mean u" is not defined above as over all voxels or over the region of interest. Both are written
+  (`mean_u_all`, `mean_u_roi`). The region-of-interest value is the one used for the test-against-validation
+  comparison and for the Spearman correlation; the all-voxel value is reported next to it.
 
 ## 8. Efficiency
 
@@ -153,12 +168,16 @@ only. No claim is made about clinical use.
 
 | Plan item | Script | Difference today |
 |---|---|---|
-| Sections 3, 5: per-case metrics, centre tables | E1 | E1 reads the old two-grid loader and scores merged foreground; the plan needs the `.acf` loader and per-label metrics. Replaced by `scripts/evaluate_test.py` (Phase 7). |
-| Section 6: thickness sweep | E2 | E2 uses levels 2, 3, 5, 7 mm on CT only (two-grid path); the plan uses 3, 5, 7 mm on the shared grid and drops cases with f = 1. The wrong-spacing check has no E script. |
+| Sections 3, 5: per-case metrics, centre tables | E1 | E1 reads the old two-grid loader and scores merged foreground. Replaced by `scripts/evaluate_test.py` (`per_case.csv`, `summary.json`), which uses the `.acf` loader and per-label metrics. |
+| Section 6: thickness sweep | E2 | E2 uses levels 2, 3, 5, 7 mm on CT only (two-grid path); the plan uses 3, 5, 7 mm on the shared grid and drops cases with f = 1. Replaced by `scripts/evaluate_test.py` (`sweep.csv`, `wrong_spacing.csv`). For the resampled models the native volume is block-averaged first and then interpolated onto their grid. |
 | Section 8: efficiency | E3 | Same intent; E3 uses the old loader. Needs a GPU. |
-| Section 7: calibration, uncertainty | E4 | E4 has ECE, reliability and AUC; Brier is coded but not wired in; NLL, temperature scaling and risk-coverage are not written. |
+| Section 7: calibration, uncertainty | E4 | E4 has ECE, reliability and AUC only. Replaced by `scripts/evaluate_test.py` (`calibration.json`, `uncertainty.json`, reliability and risk-coverage tables). |
 | Section 4: comparisons | E5 | Matches the plan after this commit (Wilcoxon, Holm, median difference, 10,000 resamples), given a per-case table with the plan's metric. |
 | Section 4: statistics | E6 | Same statistics code as E5; E6's "every model against one reference" family is not the plan's family of five. Use E5 with the five pairs. |
+
+`scripts/evaluate_test.py` scores one run. The tests of section 4 are run afterwards on the `per_case.csv`
+files of the runs, column `mean_dice`, with `src/eval/stats.py` `compare_models` and the five pairs; that last
+step has no script of its own yet.
 
 ## 11. Changes after the first test run
 

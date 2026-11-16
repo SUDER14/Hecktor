@@ -108,3 +108,22 @@ def uncertainty_error_overlap(uncertainty: np.ndarray, pred: np.ndarray, label: 
     auroc = (ranks[err].sum() - n_err * (n_err + 1) / 2) / (n_err * (n - n_err))
     return {"overlap_dice": float(overlap), "auroc": float(auroc), "mean_u_error": float(u[err].mean()),
             "mean_u_correct": float(u[~err].mean()), "n_error": n_err, "n_voxels": n}
+
+
+def brier(prob: np.ndarray, labels: np.ndarray, roi: np.ndarray | None = None) -> float:
+    """Multi-class Brier score: mean over voxels of sum_k (p_k - y_k)^2, in [0, 2]; 0 is perfect.
+    prob (K, ...), labels (...) integer classes. NaN if there are no voxels. Unlike ECE it is a proper
+    scoring rule, so it cannot be improved by being confidently wrong in a balanced way."""
+    prob = np.asarray(prob, dtype=np.float64)
+    labels = np.asarray(labels).astype(np.int64)
+    if prob.shape[1:] != labels.shape:
+        raise ValueError(f"shape mismatch: prob {prob.shape} vs labels {labels.shape}")
+    k = prob.shape[0]
+    p, y = prob.reshape(k, -1), labels.ravel()
+    if roi is not None:
+        m = np.asarray(roi).astype(bool).ravel()
+        p, y = p[:, m], y[m]
+    if y.size == 0:
+        return float("nan")
+    p_true = p[y, np.arange(y.size)]
+    return float(((p ** 2).sum(axis=0) - 2.0 * p_true + 1.0).mean())

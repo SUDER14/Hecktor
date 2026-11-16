@@ -10,7 +10,7 @@ Empty-mask convention (shared by every metric here, documented once):
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 from scipy import ndimage
@@ -46,3 +46,23 @@ def surface_dice(pred: np.ndarray, label: np.ndarray, spacing: Sequence[float], 
     d_to_p = ndimage.distance_transform_edt(~sp, sampling=spacing)
     good = (d_to_l[sp] <= tolerance_mm).sum() + (d_to_p[sl] <= tolerance_mm).sum()
     return float(good / (sp.sum() + sl.sum()))
+
+
+def aggregated_dice(preds: Sequence[np.ndarray], labels: Sequence[np.ndarray]) -> float:
+    """HECKTOR-style aggregated Dice for one label over a set of cases:
+    2 * sum_i |P_i ∩ L_i| / sum_i (|P_i| + |L_i|).
+
+    Sums are taken over cases BEFORE the ratio, so a case where the label is absent does not produce an
+    undefined term: its false-positive voxels simply add to the denominator. NaN only when every prediction
+    and every label is empty.
+    """
+    if len(preds) != len(labels):
+        raise ValueError(f"{len(preds)} predictions vs {len(labels)} labels")
+    inter = total = 0
+    for p, t in zip(preds, labels):
+        p, t = np.asarray(p).astype(bool), np.asarray(t).astype(bool)
+        if p.shape != t.shape:
+            raise ValueError(f"shape mismatch: pred {p.shape} vs label {t.shape}")
+        inter += int((p & t).sum())
+        total += int(p.sum()) + int(t.sum())
+    return float(2.0 * inter / total) if total else float("nan")

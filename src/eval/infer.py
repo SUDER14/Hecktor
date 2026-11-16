@@ -20,30 +20,34 @@ import numpy as np
 import torch
 
 from src.data.physical_crop import (
-    extract_padded,
-    grid_from_affine,
-    snap_start_index,
-    window_voxels,
+    extract_padded, grid_from_affine, snap_start_index, window_voxels,
 )
 from src.models.evidential import dirichlet_summary
 
 
-def _summarise(acc: np.ndarray, head: str) -> tuple[np.ndarray, np.ndarray]:
-    """(p, u) from the window-averaged output. Evidential head: `acc` is averaged evidence. Softmax head: `acc`
-    is ALREADY averaged probabilities (softmax was applied per window), so it must not go through softmax again;
-    doing so (the bug fixed on 2026-11-16) kept the argmax but flattened p, e.g. 0.976 -> 0.567, which would
-    have corrupted ECE, Brier, NLL and u for every softmax model."""
+def _summarise(acc: np.ndarray, head: str) -> dict[str, np.ndarray]:
+    """Window-averaged accumulator (K,X,Y,Z) -> {"p", "u", "pred"}.
+
+    Evidential head: `acc` is averaged evidence; alpha, p and u = K/S follow from it.
+    Softmax head: `acc` ALREADY holds probabilities (softmax is applied per window, before averaging), so it is
+    the answer as it stands. It must not go through softmax_summary, which expects logits: a second softmax
+    keeps the argmax but flattens every probability towards 1/K (0.96 becomes 0.56 for K = 3), which corrupts
+    ECE, Brier, NLL, temperature scaling and u. u is the entropy of p divided by log K, as in softmax_summary.
+    """
+    t = torch.from_numpy(acc)[None]
     if head == "evidential":
-        summ = dirichlet_summary(torch.from_numpy(acc)[None])
-        return summ["p"][0].numpy(), summ["u"][0].numpy()
-    ent = -(acc * np.log(np.clip(acc, 1e-12, None))).sum(0, keepdims=True)
-    return acc, (ent / np.log(acc.shape[0])).astype(np.float32)
+        summ = dirichlet_summary(t)
+        p, u = summ["p"][0].numpy(), summ["u"][0].numpy()
+    else:
+        p = acc
+        u = (-(t * torch.log(t.clamp_min(1e-12))).sum(dim=1) / float(np.log(acc.shape[0]))).numpy()
+    return {"p": p, "u": u, "pred": p.argmax(0).astype(np.uint8)}
 
 
 def window_starts(n: int, p: int, overlap: float) -> list[int]:
     if n <= p:
         return [0]
-    step = max(1, round(p * (1.0 - overlap)))
+    step = max(1, int(round(p * (1.0 - overlap))))
     s = list(range(0, n - p + 1, step))
     if s[-1] != n - p:
         s.append(n - p)
@@ -84,8 +88,7 @@ def sliding_window_dual(forward_fn, ct: np.ndarray, pet: np.ndarray, ct_affine, 
             acc[(slice(None),) + sl] += o[(slice(None),) + inner]
             cnt[sl] += 1
     acc /= np.maximum(cnt, 1)[None]
-    p, u = _summarise(acc, head)
-    return {"p": p, "u": u, "pred": p.argmax(0).astype(np.uint8)}
+    return _summarise(acc, head)
 
 
 # --- shared-grid ("pet_mode: shared"): one (2,X,Y,Z) image, fixed-voxel windows -----------------
@@ -115,8 +118,7 @@ def sliding_window(forward_fn, image: np.ndarray, patch: tuple[int, int, int], n
             acc[(slice(None),) + sl] += o[(slice(None),) + inner]
             cnt[sl] += 1
     acc /= np.maximum(cnt, 1)[None]
-    p, u = _summarise(acc, head)
-    return {"p": p, "u": u, "pred": p.argmax(0).astype(np.uint8)}
+    return _summarise(acc, head)
 
 
 def save_nifti(array: np.ndarray, affine, path: str | Path, dtype=None) -> Path:

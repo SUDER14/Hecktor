@@ -8,7 +8,8 @@ Why it is locked: the test set may inform no decision. So the script
 
 * refuses to start unless docs/ANALYSIS_PLAN.md is committed and unmodified, and the git tree is clean;
 * loads only <run>/checkpoints/best.pt, the checkpoint chosen on validation; there is no option for another one;
-* writes a lock when it starts. An interrupted run continues (same commit, plan and checkpoint) because every
+* writes a lock when it starts, keyed on the run name and on the checkpoint's sha256 (renaming the run folder or
+  deleting LOCK.json does not unlock it). An interrupted run continues (same commit, plan and checkpoint) because every
   case is saved as it finishes; a FINISHED run can be repeated only with --rerun "<reason>", which is appended to
   results/test/RERUN_LOG.txt and moves the earlier outputs aside instead of deleting them;
 * records the plan's sha256 for the first test run of any model; a later run under a different plan needs --rerun.
@@ -84,7 +85,7 @@ def check_plan_committed(root: Path = ROOT) -> dict:
         raise SystemExit(f"refusing to run: {PLAN} on disk differs from the committed version. Commit the change "
                          "(and list it in section 11 of the plan) before any test run.")
     content = _git("cat-file", "blob", head_blob, root=root, binary=True)
-    return {"commit": commit, "plan_git_blob": head_blob, "plan_sha256": hashlib.sha256(content).hexdigest()}
+    return {"commit": commit, "plan_git_blob": head_blob, "plan_sha256": hashlib.sha256(_lf(content)).hexdigest()}
 
 
 def check_clean_tree(root: Path = ROOT) -> None:
@@ -109,11 +110,31 @@ def check_out_root(out_root: Path, root: Path = ROOT) -> Path:
 
 
 def sha256_file(path) -> str:
+    """Raw bytes. For binary files (checkpoints, NIfTI predictions) only."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def _lf(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n")
+
+
+def sha256_text(path) -> str:
+    """sha256 of a TEXT file after CRLF -> LF. The same commit is checked out with LF on Colab and with CRLF on
+    Windows (core.autocrlf=true), so a hash of the raw bytes would call one split file two different files.
+    Use for the split, the conditioning statistics and the plan; never for binary files (see sha256_file)."""
+    return hashlib.sha256(_lf(Path(path).read_bytes())).hexdigest()
+
+
+def text_hash_matches(recorded: str | None, path) -> bool:
+    """True when `recorded` is the hash of this file's text. scripts/train.py (Phase 6) records the raw bytes of
+    its own checkout, which is the LF form on Linux and the CRLF form on Windows, so both forms are accepted;
+    they are the same text."""
+    lf = _lf(Path(path).read_bytes())
+    return recorded in (hashlib.sha256(lf).hexdigest(), hashlib.sha256(lf.replace(b"\n", b"\r\n")).hexdigest())
 
 
 def _atomic_json(path: Path, obj) -> None:
@@ -133,12 +154,15 @@ def _jsonable(o):
 
 
 def acquire_lock(res_dir: Path, results_root: Path, identity: dict, rerun_reason: str | None) -> str:
-    """Returns "fresh" or "resume". One lock per run name.
+    """Returns "fresh" or "resume". One lock per run name AND per checkpoint.
 
-    no lock                      -> fresh (and --rerun is refused: there is nothing to rerun)
+    nothing there                 -> fresh (and --rerun is refused: there is nothing to rerun)
     lock "started", same identity -> resume an interrupted run; cases already saved are kept
     anything else                 -> only with --rerun "<reason>": logged, earlier outputs moved aside
-    The plan hash of the first test run is pinned in <results_root>/PLAN_SHA256.json for all later runs."""
+    "Anything else" includes: a finished or different run under this name; the same checkpoint already
+    evaluated under ANOTHER name (a renamed or copied run folder must not buy a second look at the test set);
+    a results folder whose LOCK.json is gone (its per-case files must not be silently reused); and a plan that
+    changed since the first test run, whose hash is pinned in <results_root>/PLAN_SHA256.json."""
     results_root.mkdir(parents=True, exist_ok=True)
     if rerun_reason is not None and len(rerun_reason.strip()) < MIN_REASON_CHARS:
         raise SystemExit(f'--rerun needs a real reason (at least {MIN_REASON_CHARS} characters), e.g. --rerun "bug in HD95 fixed in commit abc123"')
@@ -146,24 +170,35 @@ def acquire_lock(res_dir: Path, results_root: Path, identity: dict, rerun_reason
     pin = json.loads(pin_path.read_text(encoding="utf-8")) if pin_path.exists() else None
     plan_changed = pin is not None and pin["plan_sha256"] != identity["plan_sha256"]
     old = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.exists() else None
-    mode = "fresh"
-    if old is None and not plan_changed:
+    orphan = old is None and res_dir.exists() and any(res_dir.iterdir())
+    twins = []
+    for other in sorted(results_root.glob("*/LOCK.json")):
+        if other.parent == res_dir or "__superseded_" in other.parent.name:
+            continue
+        oid = json.loads(other.read_text(encoding="utf-8"))["identity"]
+        if oid.get("checkpoint_sha256") == identity["checkpoint_sha256"] and oid.get("synthetic") == identity["synthetic"]:
+            twins.append(other.parent.name)
+    same_started = old is not None and old["state"] == "started" and old["identity"] == identity
+    if same_started and not plan_changed and rerun_reason is None and (not twins or old.get("rerun_reason")):
+        return "resume"
+    why = []
+    if old is not None:
+        why.append(f"a test run of {res_dir.name} already exists (state {old['state']}, commit {old['identity'].get('commit')})")
+    if orphan:
+        why.append(f"{res_dir} holds results but no LOCK.json")
+    if twins:
+        why.append(f"this checkpoint has already been evaluated on the test set as {', '.join(twins)}")
+    if plan_changed:
+        why.append(f"the analysis plan changed since the first test run ({pin['plan_sha256'][:12]} -> {identity['plan_sha256'][:12]})")
+    if not why:
         if rerun_reason is not None:
             raise SystemExit(f"--rerun was given but {res_dir.name} has no earlier test run; remove the flag")
-    elif old is not None and old["state"] == "started" and old["identity"] == identity and not plan_changed \
-            and rerun_reason is None:
-        return "resume"
     else:
-        why = []
-        if old is not None:
-            why.append(f"a test run of {res_dir.name} already exists (state {old['state']}, commit {old['identity'].get('commit')})")
-        if plan_changed:
-            why.append(f"the analysis plan changed since the first test run ({pin['plan_sha256'][:12]} -> {identity['plan_sha256'][:12]})")
         if rerun_reason is None:
             raise SystemExit("refusing to run: " + "; ".join(why) + '. The test set is evaluated once. If a second '
                              'run is justified, pass --rerun "<reason>"; it is logged in RERUN_LOG.txt.')
         archived = None
-        if old is not None:
+        if old is not None or orphan:
             archived = res_dir.with_name(f"{res_dir.name}__superseded_{time.strftime('%Y%m%dT%H%M%S')}")
             os.replace(res_dir, archived)
         with open(results_root / "RERUN_LOG.txt", "a", encoding="utf-8") as f:
@@ -178,7 +213,7 @@ def acquire_lock(res_dir: Path, results_root: Path, identity: dict, rerun_reason
                                 "date": time.strftime("%Y-%m-%dT%H:%M:%S")})
     _atomic_json(lock_path, {"state": "started", "identity": identity, "started": time.strftime("%Y-%m-%dT%H:%M:%S"),
                              "rerun_reason": rerun_reason})
-    return mode
+    return "fresh"
 
 
 # ------------------------------------------------------------------------------------------- metrics per case
@@ -621,10 +656,24 @@ SYNTHETIC_STATS = {"CT": {"spacing_x": {"mean": 1.0, "std": 0.2}, "spacing_y": {
                           "slice_thickness": {"mean": 3.0, "std": 1.0}}}
 
 
-def _local_split_file(recorded: str) -> Path:
-    """The split / statistics file of THIS checkout with the recorded file name. A checkpoint written on another
-    machine stores that machine's absolute path; the sha256 check against the run manifest proves it is the same file."""
-    return ROOT / "configs" / "splits" / PurePosixPath(str(recorded).replace("\\", "/")).name
+def localise_config(cfg: dict, data_root: Path | None) -> dict:
+    """A copy of the checkpoint's config with every machine path replaced. scripts/train.py stores the config in
+    best.pt with the TRAINING machine's absolute paths; none of them may steer, or be recorded by, a test run
+    made elsewhere. Split and statistics become the repo-relative files of this checkout with the recorded
+    file name (the sha256 check against the run manifest proves they are the same files); the cache folder is
+    the --data-root given now; the zip path and the old run folder are not used here and are blanked."""
+    out = copy.deepcopy(cfg)
+    for sec, key in (("split", "path"), ("conditioning", "stats_path")):
+        rel = f"configs/splits/{PurePosixPath(str(cfg[sec][key]).replace(chr(92), '/')).name}"
+        if not (ROOT / rel).exists():
+            raise SystemExit(f"{cfg[sec][key]} (recorded in the checkpoint) is not in this checkout as {rel}")
+        out[sec][key] = rel
+    out.setdefault("cache", {})["dir"] = str(data_root) if data_root is not None else None
+    if "data_dir" in out:
+        out["data_dir"] = None
+    if isinstance(out.get("run"), dict) and "dir" in out["run"]:
+        out["run"]["dir"] = None
+    return out
 
 
 def load_best(run_dir: Path, device) -> tuple[torch.nn.Module, dict, dict]:
@@ -641,7 +690,7 @@ def load_best(run_dir: Path, device) -> tuple[torch.nn.Module, dict, dict]:
     model = build_model(cfg)
     model.load_state_dict(ck["model_state"])
     model.eval().to(device)
-    return model, cfg, {"checkpoint": str(best), "checkpoint_sha256": sha256_file(best), "step": ck.get("step"),
+    return model, cfg, {"checkpoint": "checkpoints/best.pt", "checkpoint_sha256": sha256_file(best), "step": ck.get("step"),
                         "best_validation_score": ck.get("best_score")}
 
 
@@ -670,7 +719,7 @@ def _check_run_manifest(run_dir: Path, split_path: Path, stats_path: Path) -> di
     if m.get("synthetic"):
         raise SystemExit(f"run {run_dir.name} was trained with --synthetic; it cannot be scored on real test data")
     for key, path in (("split_sha256", split_path), ("conditioning_stats_sha256", stats_path)):
-        if m.get(key) != sha256_file(path):
+        if not text_hash_matches(m.get(key), path):
             raise SystemExit(f"{path.name} in this checkout is not the file the run was trained with ({key} differs)")
     return m
 
@@ -686,7 +735,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
         if config is None and run_dir is None:
             raise SystemExit("--synthetic needs --config (a model config; weights are freshly initialised) or --run-dir")
         git = {"commit": _git("rev-parse", "HEAD"), "plan_git_blob": None,
-               "plan_sha256": sha256_file(ROOT / PLAN) if (ROOT / PLAN).exists() else None}
+               "plan_sha256": sha256_text(ROOT / PLAN) if (ROOT / PLAN).exists() else None}
         run_dir = Path(run_dir) if run_dir is not None else make_synthetic_run(config, list(overrides), out_root)
         results_root = Path(results_root) if results_root is not None else out_root / "results_test_synthetic"
     else:
@@ -701,6 +750,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
         results_root = Path(results_root) if results_root is not None else ROOT / "results" / "test"
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, cfg, ck = load_best(run_dir, dev)
+    cfg = localise_config(cfg, data_root)   # no path of the training machine is used or written from here on
     name = run_dir.name
     k = cfg["model"]["out_channels"]
     use_amp = bool(cfg["train"].get("amp", True)) and dev.type == "cuda"
@@ -717,7 +767,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
         from src.data.acf_dataset import AcfVolumeDataset
         from src.data.splits import load_split
 
-        split_path, stats_path = _local_split_file(cfg["split"]["path"]), _local_split_file(cfg["conditioning"]["stats_path"])
+        split_path, stats_path = ROOT / cfg["split"]["path"], ROOT / cfg["conditioning"]["stats_path"]
         run_manifest = _check_run_manifest(run_dir, split_path, stats_path)
         split, stats = load_split(split_path), load_stats(stats_path)
         leak = set(split["test"]) & (set(split["train"]) | set(split["val"]))
@@ -736,7 +786,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
             ncfg = copy.deepcopy(cfg)
             ncfg["data"]["mode"] = "native"
             native_test = AcfVolumeDataset(samples(split["test"]), data_root, ncfg, stats)
-        hashes = {"split_sha256": sha256_file(split_path), "conditioning_stats_sha256": sha256_file(stats_path)}
+        hashes = {"split_sha256": sha256_text(split_path), "conditioning_stats_sha256": sha256_text(stats_path)}
 
     identity = {"run": name, "commit": git["commit"], "plan_sha256": git["plan_sha256"],
                 "checkpoint_sha256": ck["checkpoint_sha256"], "synthetic": synthetic}
@@ -781,7 +831,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
         "n_test": len(test_ids), "n_val": len(val_ids), "test_ids": test_ids, "sweep_mm": list(SWEEP_MM),
         "wrong_spacing_seed": WRONG_SPACING_SEED if perm is not None else None, "device": str(dev),
         "gpu_name": torch.cuda.get_device_name(0) if dev.type == "cuda" else None, "amp": use_amp,
-        "predictions_dir": str(pred_dir) if pred_dir else None, "rerun_reason": rerun, "resumed": mode == "resume",
+        "predictions_dir": f"test_predictions/{name}" if pred_dir else None, "rerun_reason": rerun, "resumed": mode == "resume",
         "finished": time.strftime("%Y-%m-%dT%H:%M:%S"), "seconds_this_session": round(time.time() - t_start, 1),
         "versions": {"python": platform.python_version(), "torch": torch.__version__, "numpy": np.__version__,
                      "pandas": pd.__version__, "platform": platform.platform()}})
@@ -855,7 +905,7 @@ def evaluate_predictions(pred_dir: Path, name: str, data_root: Path | None, out_
                                   "spacing_z": sp[2], **seg_row(pred, label, sp, k), "mean_u_all": float("nan"),
                                   "mean_u_roi": float("nan"), "unc_auroc_roi": float("nan")}}, {})
     write_outputs(res_dir, name, k, [pid for pid, _ in cases], [], train_keys, None)
-    _atomic_json(res_dir / "manifest.json", {**identity, "kind": "external predictions (label maps)", "pred_dir": str(pred_dir),
+    _atomic_json(res_dir / "manifest.json", {**identity, "kind": "external predictions (label maps)", "pred_dir": pred_dir.name,
                                              "n_test": len(cases), "rerun_reason": rerun, "resumed": mode == "resume",
                                              "finished": time.strftime("%Y-%m-%dT%H:%M:%S")})
     lock = json.loads((res_dir / "LOCK.json").read_text(encoding="utf-8"))

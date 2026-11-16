@@ -8,7 +8,8 @@ Why it is locked: the test set may inform no decision. So the script
 
 * refuses to start unless docs/ANALYSIS_PLAN.md is committed and unmodified, and the git tree is clean;
 * loads only <run>/checkpoints/best.pt, the checkpoint chosen on validation; there is no option for another one;
-* writes a lock when it starts. An interrupted run continues (same commit, plan and checkpoint) because every
+* writes a lock when it starts, keyed on the run name and on the checkpoint's sha256 (renaming the run folder or
+  deleting LOCK.json does not unlock it). An interrupted run continues (same commit, plan and checkpoint) because every
   case is saved as it finishes; a FINISHED run can be repeated only with --rerun "<reason>", which is appended to
   results/test/RERUN_LOG.txt and moves the earlier outputs aside instead of deleting them;
 * records the plan's sha256 for the first test run of any model; a later run under a different plan needs --rerun.
@@ -133,12 +134,15 @@ def _jsonable(o):
 
 
 def acquire_lock(res_dir: Path, results_root: Path, identity: dict, rerun_reason: str | None) -> str:
-    """Returns "fresh" or "resume". One lock per run name.
+    """Returns "fresh" or "resume". One lock per run name AND per checkpoint.
 
-    no lock                      -> fresh (and --rerun is refused: there is nothing to rerun)
+    nothing there                 -> fresh (and --rerun is refused: there is nothing to rerun)
     lock "started", same identity -> resume an interrupted run; cases already saved are kept
     anything else                 -> only with --rerun "<reason>": logged, earlier outputs moved aside
-    The plan hash of the first test run is pinned in <results_root>/PLAN_SHA256.json for all later runs."""
+    "Anything else" includes: a finished or different run under this name; the same checkpoint already
+    evaluated under ANOTHER name (a renamed or copied run folder must not buy a second look at the test set);
+    a results folder whose LOCK.json is gone (its per-case files must not be silently reused); and a plan that
+    changed since the first test run, whose hash is pinned in <results_root>/PLAN_SHA256.json."""
     results_root.mkdir(parents=True, exist_ok=True)
     if rerun_reason is not None and len(rerun_reason.strip()) < MIN_REASON_CHARS:
         raise SystemExit(f'--rerun needs a real reason (at least {MIN_REASON_CHARS} characters), e.g. --rerun "bug in HD95 fixed in commit abc123"')
@@ -146,24 +150,35 @@ def acquire_lock(res_dir: Path, results_root: Path, identity: dict, rerun_reason
     pin = json.loads(pin_path.read_text(encoding="utf-8")) if pin_path.exists() else None
     plan_changed = pin is not None and pin["plan_sha256"] != identity["plan_sha256"]
     old = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.exists() else None
-    mode = "fresh"
-    if old is None and not plan_changed:
+    orphan = old is None and res_dir.exists() and any(res_dir.iterdir())
+    twins = []
+    for other in sorted(results_root.glob("*/LOCK.json")):
+        if other.parent == res_dir or "__superseded_" in other.parent.name:
+            continue
+        oid = json.loads(other.read_text(encoding="utf-8"))["identity"]
+        if oid.get("checkpoint_sha256") == identity["checkpoint_sha256"] and oid.get("synthetic") == identity["synthetic"]:
+            twins.append(other.parent.name)
+    same_started = old is not None and old["state"] == "started" and old["identity"] == identity
+    if same_started and not plan_changed and rerun_reason is None and (not twins or old.get("rerun_reason")):
+        return "resume"
+    why = []
+    if old is not None:
+        why.append(f"a test run of {res_dir.name} already exists (state {old['state']}, commit {old['identity'].get('commit')})")
+    if orphan:
+        why.append(f"{res_dir} holds results but no LOCK.json")
+    if twins:
+        why.append(f"this checkpoint has already been evaluated on the test set as {', '.join(twins)}")
+    if plan_changed:
+        why.append(f"the analysis plan changed since the first test run ({pin['plan_sha256'][:12]} -> {identity['plan_sha256'][:12]})")
+    if not why:
         if rerun_reason is not None:
             raise SystemExit(f"--rerun was given but {res_dir.name} has no earlier test run; remove the flag")
-    elif old is not None and old["state"] == "started" and old["identity"] == identity and not plan_changed \
-            and rerun_reason is None:
-        return "resume"
     else:
-        why = []
-        if old is not None:
-            why.append(f"a test run of {res_dir.name} already exists (state {old['state']}, commit {old['identity'].get('commit')})")
-        if plan_changed:
-            why.append(f"the analysis plan changed since the first test run ({pin['plan_sha256'][:12]} -> {identity['plan_sha256'][:12]})")
         if rerun_reason is None:
             raise SystemExit("refusing to run: " + "; ".join(why) + '. The test set is evaluated once. If a second '
                              'run is justified, pass --rerun "<reason>"; it is logged in RERUN_LOG.txt.')
         archived = None
-        if old is not None:
+        if old is not None or orphan:
             archived = res_dir.with_name(f"{res_dir.name}__superseded_{time.strftime('%Y%m%dT%H%M%S')}")
             os.replace(res_dir, archived)
         with open(results_root / "RERUN_LOG.txt", "a", encoding="utf-8") as f:
@@ -178,7 +193,7 @@ def acquire_lock(res_dir: Path, results_root: Path, identity: dict, rerun_reason
                                 "date": time.strftime("%Y-%m-%dT%H:%M:%S")})
     _atomic_json(lock_path, {"state": "started", "identity": identity, "started": time.strftime("%Y-%m-%dT%H:%M:%S"),
                              "rerun_reason": rerun_reason})
-    return mode
+    return "fresh"
 
 
 # ------------------------------------------------------------------------------------------- metrics per case

@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0">
+<title>Scan Layers</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one big 3D stage with a five-step story under it. The three scans (CT, PET,
+   label) are stacks of horizontal layers that rotate flat, spread side by side, slide
+   into one another, and finally are viewed from above. Dark single look, like the Studio. */
+:root {
+  --bg: #04080d; --panel: rgba(9, 24, 38, 0.78);
+  --line: rgba(76, 201, 240, 0.22); --line2: rgba(76, 201, 240, 0.5);
+  --ink: #e3f2fa; --muted: #86a3b6; --cyan: #3fd8ff; --violet: #9a7bff;
+  --red: #ff4d4d; --green: #4be39a; --amber: #ffb454;
+  --display: "Saira Semi Condensed", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; color: var(--ink); font-family: var(--display); font-size: 14px; line-height: 1.45;
+  background: radial-gradient(1100px 560px at 75% -10%, rgba(63,216,255,0.10), transparent 60%),
+              radial-gradient(800px 480px at -10% 45%, rgba(154,123,255,0.08), transparent 60%), var(--bg);
+  background-color: var(--bg);
+  padding-block: 14px 28px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  min-height: 100vh;
+}
+.app { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+h1, h2, h3 { margin: 0; font-weight: 600; text-wrap: balance; }
+p { margin: 0; }
+.glass { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.45); min-width: 0; }
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 10px 14px; }
+.logo { display: flex; align-items: center; gap: 10px; flex: none; }
+.logo b { font-size: 13px; letter-spacing: 0.14em; border: 1px solid var(--cyan); color: var(--cyan); padding: 3px 8px; border-radius: 6px; box-shadow: 0 0 14px rgba(63,216,255,0.35); }
+.logo h1 { font-size: 17px; white-space: nowrap; }
+.sp { flex: 1; }
+.tag { white-space: nowrap; font-family: var(--mono); font-size: 11px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+.tag.warn { border-color: rgba(255,180,84,0.6); color: var(--amber); }
+.tag.ok { border-color: rgba(75,227,154,0.55); color: var(--green); }
+.load { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 14px; }
+.btn { font: inherit; font-size: 13px; color: var(--ink); background: rgba(63,216,255,0.07); border: 1px solid var(--line2); border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+.btn:hover { background: rgba(63,216,255,0.16); }
+.btn.quiet { border-color: var(--line); background: transparent; }
+.btn[disabled] { opacity: 0.4; cursor: default; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-family: var(--mono); font-size: 11.5px; border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; color: var(--muted); }
+.chip b { color: var(--ink); font-weight: 500; }
+.note { color: var(--muted); font-size: 12px; }
+.stagebox { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.step { font: inherit; text-align: left; cursor: pointer; color: var(--ink); background: rgba(255,255,255,0.02); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 1px; }
+.step small { font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: 0.08em; }
+.step span { font-size: 13.5px; font-weight: 500; }
+.step[aria-pressed="true"] { border-color: var(--cyan); background: rgba(63,216,255,0.13); box-shadow: 0 0 18px rgba(63,216,255,0.2); }
+.step[aria-pressed="true"] small { color: var(--cyan); }
+.vwrap { position: relative; height: 560px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: radial-gradient(640px 300px at 50% 90%, rgba(63,216,255,0.12), transparent 70%), #02060a; cursor: grab; touch-action: none; }
+.vwrap.drag { cursor: grabbing; }
+.persp { position: absolute; inset: 0; perspective: 1500px; display: flex; align-items: center; justify-content: center; }
+.world { position: relative; width: 0; height: 0; transform-style: preserve-3d; transition: transform 1s cubic-bezier(.3,.7,.2,1); }
+.vwrap.drag .world { transition: none; }
+.layer { position: absolute; transition: transform .9s cubic-bezier(.3,.7,.2,1), opacity .6s ease; transition-delay: calc(var(--i, 0) * 26ms * var(--dm, 1)); }
+.layer canvas { display: block; width: 100%; height: 100%; }
+.l-ct { opacity: var(--oc, 1); } .l-pet { opacity: var(--op, 0); } .l-lab { opacity: var(--ol, 0); } .l-top { opacity: var(--ot, 0); }
+.tag3d { position: absolute; text-align: center; font-family: var(--mono); font-size: 22px; letter-spacing: 0.24em; color: var(--cyan); text-shadow: 0 0 14px rgba(63,216,255,0.7); transition: transform .9s cubic-bezier(.3,.7,.2,1), opacity .6s; white-space: nowrap; }
+.hud { position: absolute; left: 12px; top: 10px; display: flex; flex-direction: column; gap: 3px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); pointer-events: none; }
+.hud b { color: var(--cyan); font-weight: 500; }
+.hint { position: absolute; right: 12px; top: 10px; font-size: 11px; color: var(--muted); pointer-events: none; }
+.topmap { position: absolute; right: 12px; bottom: 12px; width: 190px; border: 1px solid var(--line2); border-radius: 8px; background: rgba(2,8,12,0.85); padding: 6px; display: none; flex-direction: column; gap: 4px; pointer-events: none; }
+.topmap canvas { width: 100%; height: auto; display: block; border-radius: 4px; background: #000; }
+.topmap span { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.legend { height: 6px; border-radius: 3px; background: linear-gradient(90deg, hsl(190 100% 62%), hsl(255 100% 70%), hsl(320 100% 66%)); }
+.row { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: flex-end; }
+.ctl { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.ctl > span:first-child { text-transform: uppercase; letter-spacing: 0.1em; font-size: 10px; }
+input[type="range"] { accent-color: var(--cyan); width: 160px; max-width: 100%; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.caption { padding: 14px; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }
+.caption h2 { font-size: 18px; margin-bottom: 4px; }
+.caption p { color: var(--muted); max-width: 70ch; }
+.facts { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; font-size: 13px; align-content: start; }
+.facts span:nth-child(odd) { color: var(--muted); }
+.facts span:nth-child(even) { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+footer { color: var(--muted); font-size: 12px; display: flex; flex-direction: column; gap: 3px; padding: 0 4px; }
+.inspect { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.inspect figure { margin: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.inspect canvas { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #000; display: block; image-rendering: pixelated; }
+.inspect figcaption { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.insp-head { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: flex-end; }
+.insp-head h2 { font-size: 16px; }
+.btn[aria-pressed="true"] { border-color: var(--cyan); background: rgba(63,216,255,0.2); }
+body.embed { padding: 0; min-height: 0; }
+body.embed .top, body.embed .load label.btn, body.embed #reset { display: none; }
+@media (max-width: 860px) {
+  .caption { grid-template-columns: minmax(0, 1fr); }
+  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vwrap { height: 440px; }
+  .topmap { width: 140px; }
+}
+@media (prefers-reduced-motion: reduce) { .world, .layer, .tag3d { transition: none !important; } }
+</style>
+
+<div class="app">
+  <header class="glass top">
+    <div class="logo"><b>ACF</b><h1>Scan Layers</h1></div>
+    <span class="sp"></span>
+    <span class="tag warn" id="tag-src">Synthetic phantom</span>
+    <span class="tag ok">Files are read in this browser only</span>
+  </header>
+
+  <section class="glass load" aria-label="Load scans">
+    <label class="btn" for="file-in">Load CT, PET and label (.nii, .nii.gz)</label>
+    <input id="file-in" type="file" accept=".nii,.nii.gz" multiple hidden>
+    <button class="btn quiet" id="reset" hidden>Back to phantom</button>
+    <div class="chips" id="chips"></div>
+    <span class="note" id="msg" role="status"></span>
+  </section>
+
+  <section class="glass stagebox">
+    <div class="steps" id="steps">
+      <button class="step" data-s="0" aria-pressed="true"><small>STEP 1</small><span>Your scan</span></button>
+      <button class="step" data-s="1" aria-pressed="false"><small>STEP 2</small><span>Lay it flat</span></button>
+      <button class="step" data-s="2" aria-pressed="false"><small>STEP 3</small><span>Side by side</span></button>
+      <button class="step" data-s="3" aria-pressed="false"><small>STEP 4</small><span>Overlay by layer</span></button>
+      <button class="step" data-s="4" aria-pressed="false"><small>STEP 5</small><span>Tumour from above</span></button>
+    </div>
+    <div class="vwrap" id="vwrap">
+      <div class="persp"><div class="world" id="world"></div></div>
+      <div class="hud" id="hud"></div>
+      <div class="hint">drag to rotate · ← → change step</div>
+      <div class="topmap" id="topmap"><canvas id="topc"></canvas><div class="legend"></div><span>feet &#8594; head, outline per layer</span></div>
+    </div>
+    <div class="row">
+      <button class="btn" id="prev">Back</button>
+      <button class="btn" id="next">Next</button>
+      <button class="btn quiet" id="play">Play the story</button>
+      <div class="ctl"><span>Layer gap</span><input id="gap" type="range" min="0.5" max="1.8" step="0.05" value="1" aria-label="Layer gap"></div>
+      <div class="ctl"><span>Cut away from the top <b id="cut-read" style="color:var(--ink);font-family:var(--mono)"></b></span><input id="cut" type="range" min="1" max="24" step="1" value="24" aria-label="Cut away from the top"></div>
+    </div>
+  </section>
+
+  <section class="glass stagebox" aria-label="Layer inspector">
+    <div class="insp-head">
+      <h2>One layer, laid flat</h2>
+      <div class="ctl"><span>Inspect layer <b id="pick-read" style="color:var(--ink);font-family:var(--mono)"></b></span><input id="pick" type="range" min="1" max="24" step="1" value="12" aria-label="Inspect layer"></div>
+      <button class="btn quiet" id="hl" aria-pressed="false">Highlight it in 3D</button>
+      <span class="note" id="insp-note"></span>
+    </div>
+    <div class="inspect">
+      <figure><canvas id="i-ct"></canvas><figcaption>CT: anatomy</figcaption></figure>
+      <figure><canvas id="i-pet"></canvas><figcaption>PET: activity</figcaption></figure>
+      <figure><canvas id="i-fus"></canvas><figcaption>Overlay with tumour outline</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="glass caption">
+    <div><h2 id="cap-title"></h2><p id="cap-text"></p></div>
+    <div class="facts" id="facts"></div>
+  </section>
+
+  <footer>
+    <p>Research prototype, not for clinical use. The phantom is built in your browser. A scan you load is read locally; nothing is uploaded or stored.</p>
+    <p>Layers are evenly spaced slices of the real volume, at most 24 of them. PET is auto-scaled to its own brightest 0.3 percent, because the released PET is not on one unit scale. Loaded volumes are reduced to at most 256 voxels in-plane.</p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function smooth(t) { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); }
+  function hash(i, j, k) { var h = (i * 374761393 + j * 668265263 + k * 2147483647) | 0; h = (h ^ (h >>> 13)) * 1274126177 | 0; h = h ^ (h >>> 16); return ((h & 0xffff) / 32768) - 1; }
+  function vnoise(x, y, z) {
+    var xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), fx = x - xi, fy = y - yi, fz = z - zi;
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); fz = fz * fz * (3 - 2 * fz);
+    function L(a, b, c) { return hash(xi + a, yi + b, zi + c); }
+    var x00 = L(0, 0, 0) + (L(1, 0, 0) - L(0, 0, 0)) * fx, x10 = L(0, 1, 0) + (L(1, 1, 0) - L(0, 1, 0)) * fx;
+    var x01 = L(0, 0, 1) + (L(1, 0, 1) - L(0, 0, 1)) * fx, x11 = L(0, 1, 1) + (L(1, 1, 1) - L(0, 1, 1)) * fx;
+    var y0 = x00 + (x10 - x00) * fy, y1 = x01 + (x11 - x01) * fy; return y0 + (y1 - y0) * fz;
+  }
+  function hot(v) { v = clamp(v, 0, 1); return [Math.min(1, v * 3), clamp(v * 3 - 1, 0, 1), clamp(v * 3 - 2, 0, 1)]; }
+  function hsl(h, s, l) { s /= 100; l /= 100; var a = s * Math.min(l, 1 - l); function f(n) { var k = (n + h / 30) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); } return [f(0) * 255, f(8) * 255, f(4) * 255]; }
+
+  // ---------- synthetic phantom ----------
+  var BLOBS = [{ c: [74, 106, 66], r: [11, 10, 12], peak: 11, lab: 1 }, { c: [130, 90, 58], r: [8, 8, 9], peak: 8, lab: 2 }, { c: [62, 90, 50], r: [6, 6, 7], peak: 6, lab: 2 }];
+  function ell(x, y, z, c, r) { var a = (x - c[0]) / r[0], b = (y - c[1]) / r[1], d = (z - c[2]) / r[2]; return a * a + b * b + d * d; }
+  function gen(sx, sy, sz) {
+    var EXT = [192, 192, 144], nx = Math.round(EXT[0] / sx), ny = Math.round(EXT[1] / sy), nz = Math.round(EXT[2] / sz), n = nx * ny * nz;
+    var ct = new Int16Array(n), pet = new Float32Array(n), lab = new Uint8Array(n), idx = 0;
+    for (var k = 0; k < nz; k++) {
+      var z = (k + 0.5) * sz, t = smooth((z - 50) / 22), dome = Math.sqrt(Math.max(0.02, 1 - Math.pow(clamp((z - 96) / 48, 0, 1), 2.2))), rx = (40 + 30 * t) * dome, ry = (46 + 40 * t) * dome;
+      for (var j = 0; j < ny; j++) {
+        var y = (j + 0.5) * sy;
+        for (var i = 0; i < nx; i++, idx++) {
+          var x = (i + 0.5) * sx, dx = (x - 96) / rx, dy = (y - 96) / ry, q = dx * dx + dy * dy, hu = -1000, suv = 0.05, L = 0;
+          if (q < 1) {
+            hu = 42 + 10 * vnoise(x / 7, y / 7, z / 7); suv = 1.1 + 0.25 * vnoise(x / 9, y / 9, z / 9);
+            if (z < 78 && z > 14 && (ell(x, y, z, [60, 92, 46], [9, 10, 32]) < 1 || ell(x, y, z, [132, 92, 46], [9, 10, 32]) < 1)) { hu = 58 + 6 * vnoise(x / 4, y / 4, z / 4); suv = 1.7; }
+            if (q > 0.8 && q < 0.93 && z > 75) { hu = 620 + 120 * vnoise(x / 5, y / 5, z / 5); suv = 0.6; }
+            else if (q < 0.8 && z > 82) { hu = 32 + 9 * vnoise(x / 4, y / 4, z / 4); suv = 3.3 + 0.5 * vnoise(x / 6, y / 6, z / 6); if (ell(x, y, z, [96, 98, 104], [7, 17, 9]) < 1) { hu = 8; suv = 0.4; } }
+            else if (q > 0.72 && q < 0.9 && z > 60 && z < 78 && y > 96) { hu = 580; suv = 0.6; }
+            var sdx = x - 96, sdy = y - (96 - 0.5 * ry); if (sdx * sdx + sdy * sdy < 81 && z < 80) { hu = 470 + 60 * vnoise(x / 4, y / 4, z / 3); suv = 1.4; }
+            var adx = (x - 96) / 8, ady = (y - 98) / 10; if (adx * adx + ady * ady < 1 && z > 40 && z < 86) { hu = -950; suv = 0.2; }
+            if (z > 62 && z < 80 && (ell(x, y, z, [80, 118, 70], [10, 8, 9]) < 1 || ell(x, y, z, [112, 118, 70], [10, 8, 9]) < 1)) { hu = -980; suv = 0.1; }
+            for (var b = 0; b < BLOBS.length; b++) { var B = BLOBS[b], d = ell(x, y, z, B.c, B.r); suv += B.peak * Math.exp(-1.8 * d); if (d < 1) { L = B.lab; hu = Math.max(hu, 50); } }
+          }
+          hu += 6 * hash(i, j, k); ct[idx] = hu; pet[idx] = Math.max(0, suv + 0.25 * hash(k, i, j)); lab[idx] = L;
+        }
+      }
+    }
+    return { nx: nx, ny: ny, nz: nz, sx: sx, sy: sy, sz: sz, ext: [nx * sx, ny * sy, nz * sz], ct: ct, pet: pet, lab: lab, hasPet: true, hasLab: true, flip: [false, true, true], real: false, name: 'Synthetic phantom' };
+  }
+
+  // ---------- state ----------
+  var V = null, L = 24, LY = [], SLICECNT = null, petScale = 10, maskNote = '', step = 0, playT = 0;
+  var cam = { rx: 86, rz: 0, s: 1 }, SPX = 300;
+  function evidTumour(s) { var tt = 4.5; return smooth((s - tt) / 3) > smooth((tt - s) / 3); }
+  function inMask(id) { return V.hasLab ? V.lab[id] > 0 : (V.hasPet && evidTumour(V.pet[id])); }
+  function geom() { var s = SPX / Math.max(V.ext[0], V.ext[1]); return { w: V.ext[0] * s, h: V.ext[1] * s, zt0: V.ext[2] * s }; }
+  function kOf(li) { var k = L === 1 ? 0 : Math.round(li * (V.nz - 1) / (L - 1)); return V.flip[2] ? k : V.nz - 1 - k; }
+  function vid(i, j, k) { return (V.flip[0] ? V.nx - 1 - i : i) + V.nx * ((V.flip[1] ? V.ny - 1 - j : j) + V.ny * k); }
+
+  function drawLayer(kind, li) {
+    var cv = document.createElement('canvas'), nx = V.nx, ny = V.ny; cv.width = nx; cv.height = ny;
+    var ctx = cv.getContext('2d'), img = ctx.createImageData(nx, ny), k = kOf(li), t = L > 1 ? li / (L - 1) : 0, dc = hsl(190 + 130 * t, 100, 64), mk = null;
+    if (kind === 'top') { mk = new Uint8Array(nx * ny); for (var j0 = 0; j0 < ny; j0++) for (var i0 = 0; i0 < nx; i0++) mk[j0 * nx + i0] = inMask(vid(i0, j0, k)) ? 1 : 0; }
+    for (var j = 0; j < ny; j++) for (var i = 0; i < nx; i++) {
+      var id = vid(i, j, k), q = (j * nx + i) * 4, R = 0, G = 0, B = 0, A = 0, hu = V.ct[id];
+      if (kind === 'ct') {
+        var g = clamp((hu + 160) / 400, 0, 1) * 255; R = G = B = g; A = Math.pow(clamp((hu + 350) / 650, 0, 1), 1.3) * 0.55 + (hu > 250 ? 0.3 : 0);
+      } else if (kind === 'pet') {
+        var v = clamp(V.pet[id] / petScale, 0, 1), hc = hot(v); R = hc[0] * 255; G = hc[1] * 255; B = hc[2] * 255; A = clamp(v * 1.5, 0, 1) * 0.92;
+        if (hu > -300) { A = Math.max(A, 0.08); if (v < 0.05) { R = G = B = 180; } }
+      } else if (kind === 'lab') {
+        var lv = V.hasLab ? V.lab[id] : (inMask(id) ? 1 : 0);
+        if (lv > 0) { var c = lv === 1 ? [255, 70, 70] : [75, 227, 154]; R = c[0]; G = c[1]; B = c[2]; A = 0.92; } else if (hu > -300) { R = G = B = 180; A = 0.08; }
+      } else {
+        if (mk[j * nx + i]) {
+          var edge = (i === 0 || mk[j * nx + i - 1] === 0) || (i === nx - 1 || mk[j * nx + i + 1] === 0) || (j === 0 || mk[(j - 1) * nx + i] === 0) || (j === ny - 1 || mk[(j + 1) * nx + i] === 0);
+          if (edge) { R = dc[0]; G = dc[1]; B = dc[2]; A = 1; }
+          else { R = dc[0]; G = dc[1]; B = dc[2]; A = 0.16; }
+        }
+      }
+      img.data[q] = R; img.data[q + 1] = G; img.data[q + 2] = B; img.data[q + 3] = clamp(A, 0, 1) * 255;
+    }
+    ctx.putImageData(img, 0, 0); return cv;
+  }
+
+  function build() {
+    var w = $('world'); w.innerHTML = ''; LY = []; L = Math.min(V.nz, 24);
+    var G = geom(); $('cut').max = L; $('cut').value = L;
+    ['ct', 'pet', 'lab', 'top'].forEach(function (kind) {
+      for (var li = 0; li < L; li++) {
+        var el = document.createElement('div'); el.className = 'layer l-' + kind; el.style.width = G.w + 'px'; el.style.height = G.h + 'px'; el.style.left = (-G.w / 2) + 'px'; el.style.top = (-G.h / 2) + 'px';
+        el.style.setProperty('--i', li); el.appendChild(drawLayer(kind, li)); w.appendChild(el); LY.push({ el: el, kind: kind, li: li });
+      }
+    });
+    ['CT', 'PET', 'LABEL'].forEach(function (n, i) { var t = document.createElement('div'); t.className = 'tag3d'; t.id = 'tg' + i; t.textContent = n; t.style.width = G.w + 'px'; t.style.left = (-G.w / 2) + 'px'; t.style.top = (-14) + 'px'; w.appendChild(t); });
+    // tumour voxels per slice, for the live numbers
+    SLICECNT = new Float64Array(V.nz); for (var k = 0; k < V.nz; k++) { var c = 0; for (var j = 0; j < V.ny; j++) for (var i = 0; i < V.nx; i++) if (inMask((V.flip[0] ? V.nx - 1 - i : i) + V.nx * ((V.flip[1] ? V.ny - 1 - j : j) + V.ny * k))) c++; SLICECNT[k] = c; }
+    // PET display scale: brightest 0.3 percent of positive voxels
+    var samp = []; if (V.hasPet) { for (var q = 0; q < V.pet.length; q += 7) if (V.pet[q] > 0.01) samp.push(V.pet[q]); samp.sort(function (a, b) { return a - b; }); petScale = samp.length ? Math.max(samp[Math.floor(samp.length * 0.997)], 0.5) : 1; }
+    maskNote = V.hasLab ? '' : ' (no label file, so the outline is the PET demo rule)';
+    var ch = [['CT', '<b>' + V.nx + '×' + V.ny + '×' + V.nz + '</b> voxels'], ['spacing', '<b>' + V.sx.toFixed(2) + ' × ' + V.sy.toFixed(2) + ' × ' + V.sz.toFixed(2) + '</b> mm'], ['PET', '<b>' + (V.hasPet ? 'yes' : 'no') + '</b>'], ['label', '<b>' + (V.hasLab ? 'yes' : 'no') + '</b>'], ['layers drawn', '<b>' + L + '</b> of ' + V.nz]];
+    $('chips').innerHTML = ch.map(function (c) { return '<span class="chip">' + c[0] + ' ' + c[1] + '</span>'; }).join('');
+    $('tag-src').textContent = V.real ? 'Your scan, local only' : 'Synthetic phantom'; $('reset').hidden = !V.real;
+    var best = Math.floor(L / 2), bc = 0; for (var q2 = 0; q2 < L; q2++) { var cc = SLICECNT[kOf(q2)]; if (cc > bc) { bc = cc; best = q2; } }
+    $('pick').max = L; $('pick').value = best + 1;
+    apply(false); inspect();
+  }
+
+  // ---------- one layer, flat ----------
+  function inspect() {
+    if (!V) return;
+    var li = clamp(parseInt($('pick').value, 10) - 1, 0, L - 1), k = kOf(li), nx = V.nx, ny = V.ny, ctxs = [], imgs = [];
+    ['i-ct', 'i-pet', 'i-fus'].forEach(function (id) { var c = $(id); c.width = nx; c.height = ny; var x = c.getContext('2d'); ctxs.push(x); imgs.push(x.createImageData(nx, ny)); });
+    var mk = new Uint8Array(nx * ny), i, j, id;
+    for (j = 0; j < ny; j++) for (i = 0; i < nx; i++) { id = vid(i, j, k); mk[j * nx + i] = V.hasLab ? V.lab[id] : (inMask(id) ? 1 : 0); }
+    for (j = 0; j < ny; j++) for (i = 0; i < nx; i++) {
+      id = vid(i, j, k); var q = (j * nx + i) * 4, g = clamp((V.ct[id] + 160) / 400, 0, 1) * 255, v = V.hasPet ? clamp(V.pet[id] / petScale, 0, 1) : 0, hc = hot(v), a = clamp(v * 1.4, 0, 0.75);
+      var R = g * (1 - a) + hc[0] * 255 * a, Gc = g * (1 - a) + hc[1] * 255 * a, B = g * (1 - a) + hc[2] * 255 * a, m = mk[j * nx + i];
+      if (m) { var edge = i === 0 || j === 0 || i === nx - 1 || j === ny - 1 || !mk[j * nx + i - 1] || !mk[j * nx + i + 1] || !mk[(j - 1) * nx + i] || !mk[(j + 1) * nx + i]; if (edge) { var c = m === 1 ? [255, 70, 70] : [75, 227, 154]; R = c[0]; Gc = c[1]; B = c[2]; } }
+      var d0 = imgs[0].data, d1 = imgs[1].data, d2 = imgs[2].data;
+      d0[q] = d0[q + 1] = d0[q + 2] = g; d0[q + 3] = 255;
+      d1[q] = hc[0] * 255; d1[q + 1] = hc[1] * 255; d1[q + 2] = hc[2] * 255; d1[q + 3] = 255;
+      d2[q] = R; d2[q + 1] = Gc; d2[q + 2] = B; d2[q + 3] = 255;
+    }
+    for (i = 0; i < 3; i++) ctxs[i].putImageData(imgs[i], 0, 0);
+    $('pick-read').textContent = (li + 1) + ' / ' + L;
+    $('insp-note').textContent = 'Layer ' + (li + 1) + ' counted from the bottom, slice ' + (k + 1) + ' of ' + V.nz + ', tumour area ' + (SLICECNT[k] * V.sx * V.sy).toFixed(0) + ' mm²' + (V.hasLab ? '' : ' (PET demo rule)');
+    var on = $('hl').getAttribute('aria-pressed') === 'true';
+    LY.forEach(function (o) { o.el.style.opacity = (on && o.li !== li) ? 0.06 : ''; });
+  }
+  $('pick').addEventListener('input', inspect);
+  $('hl').addEventListener('click', function () { this.setAttribute('aria-pressed', this.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); inspect(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.target && e.target.closest && e.target.closest('input,select,textarea')) return;
+    if (e.key === 'ArrowRight') { stopPlay(); go(step + 1); } else if (e.key === 'ArrowLeft') { stopPlay(); go(step - 1); }
+  });
+
+  // ---------- the five steps ----------
+  function stateFor(s) {
+    var G = geom(), vw = $('vwrap').clientWidth || 900, side = Math.min(1, vw / (G.w * 3.6)), D = G.w * 1.2;
+    var S = [
+      { rx: 80, rz: -18, s: 1, ex: 1, off: [0, 0, 0], o: [1, 0, 0, 0], tags: [0, 0, 0] },
+      { rx: 60, rz: -34, s: 1, ex: 1.7, off: [0, 0, 0], o: [1, 0, 0, 0], tags: [1, 0, 0], tn: ['CT', '', ''] },
+      { rx: 56, rz: -22, s: side, ex: 1.2, off: [-D, 0, D], o: [1, 1, 1, 0], tags: [1, 1, 1] },
+      { rx: 60, rz: -30, s: 1, ex: 1.2, off: [0, 0, 0], o: [0.85, 0.9, 1, 0], tags: [1, 0, 0], tn: ['CT + PET + LABEL', '', ''] },
+      { rx: 0, rz: 0, s: 1, ex: 1.0, off: [0, 0, 0], o: [0.3, 0.18, 0.25, 1], tags: [0, 0, 0] }
+    ];
+    return S[s];
+  }
+  function apply(animate, keep) {
+    if (!V) return;
+    var st = stateFor(step), G = geom(), gapM = parseFloat($('gap').value), cut = parseInt($('cut').value, 10), zt = G.zt0 * st.ex * gapM, stp = L > 1 ? zt / (L - 1) : 0, zc = -zt / 2;
+    var w = $('world'); w.style.setProperty('--dm', animate ? 1 : 0);
+    var rxr = st.rx * Math.PI / 180, vh = ($('vwrap').clientHeight || 560) - 120, need = zt * Math.sin(rxr) + G.h * Math.cos(rxr) + 40, fit = Math.min(1, vh / need);
+    if (!keep) { cam.rx = st.rx; cam.rz = st.rz; } cam.s = st.s * fit;
+    w.style.setProperty('--oc', st.o[0]); w.style.setProperty('--op', st.o[1]); w.style.setProperty('--ol', st.o[2]); w.style.setProperty('--ot', st.o[3]);
+    var bias = { ct: 0, pet: 1.5, lab: 3, top: 4.5 }, offIdx = { ct: 0, pet: 1, lab: 2, top: 0 };
+    LY.forEach(function (o) {
+      o.el.style.transform = 'translateX(' + st.off[offIdx[o.kind]] + 'px) translateZ(' + (zc + o.li * stp + bias[o.kind]) + 'px)';
+      o.el.style.display = o.li >= cut ? 'none' : 'block';
+    });
+    for (var i = 0; i < 3; i++) {
+      var t = $('tg' + i); t.style.opacity = st.tags[i]; if (st.tn && st.tn[i] != null && st.tn[i] !== '') t.textContent = st.tn[i]; else if (!st.tn) t.textContent = ['CT', 'PET', 'LABEL'][i];
+      t.style.transform = 'translateX(' + st.off[i] + 'px) translateY(' + (G.h / 2 + 18) + 'px) translateZ(' + (zc - 16) + 'px)';
+    }
+    applyCam(); caption(); topmap(cut); $('cut-read').textContent = cut + ' / ' + L;
+    Array.prototype.forEach.call(document.querySelectorAll('.step'), function (b) { b.setAttribute('aria-pressed', parseInt(b.getAttribute('data-s'), 10) === step ? 'true' : 'false'); });
+    $('topmap').style.display = step === 4 ? 'flex' : 'none';
+    $('prev').disabled = step === 0; $('next').disabled = step === 4;
+  }
+  function applyCam() { $('world').style.transform = 'scale(' + cam.s + ') rotateX(' + cam.rx + 'deg) rotateZ(' + cam.rz + 'deg)'; }
+
+  function topmap(cut) {
+    if (step !== 4) return;
+    var cv = $('topc'); cv.width = V.nx; cv.height = V.ny; var ctx = cv.getContext('2d'); ctx.clearRect(0, 0, V.nx, V.ny);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, V.nx, V.ny);
+    for (var li = 0; li < cut; li++) { var o = LY.filter(function (q) { return q.kind === 'top' && q.li === li; })[0]; if (o) ctx.drawImage(o.el.firstChild, 0, 0); }
+  }
+  function caption() {
+    var cut = parseInt($('cut').value, 10), kTop = kOf(Math.max(0, cut - 1)), vox = V.sx * V.sy * V.sz / 1000, acc = 0, nTum = 0, k;
+    var kmin = V.flip[2] ? 0 : kTop, kmax = V.flip[2] ? kTop : V.nz - 1;
+    for (k = kmin; k <= kmax; k++) acc += SLICECNT[k];
+    for (k = 0; k < V.nz; k++) nTum += SLICECNT[k];
+    var area = SLICECNT[kTop] * V.sx * V.sy, full = cut >= L;
+    var T = [
+      ['Your scan', 'A scan is a block of numbers. Here it is at its real proportions, seen almost from the side. Every file you load becomes one such block.', [['CT grid', V.nx + ' × ' + V.ny + ' × ' + V.nz], ['Voxel size', V.sx.toFixed(2) + ' × ' + V.sy.toFixed(2) + ' × ' + V.sz.toFixed(2) + ' mm'], ['Physical size', V.ext.map(function (v) { return v.toFixed(0); }).join(' × ') + ' mm']]],
+      ['Lay it flat', 'The block is pulled apart into horizontal layers, one per slice, head at the top. Each layer is a flat picture of the patient at one height. Drag to rotate and use the gap slider to spread them.', [['Layers drawn', L + ' of ' + V.nz], ['Gap between slices', V.sz.toFixed(2) + ' mm'], ['Top layer height', (V.ext[2]).toFixed(0) + ' mm']]],
+      ['Side by side', 'Three files, three stacks: CT for anatomy, PET for activity, and the label that marks the tumour. Same layers, same positions, different information.', [['CT', 'grey, bone is bright'], ['PET', 'hot colours, bright = active'], ['Label', V.hasLab ? 'red and green blobs' : 'none loaded']]],
+      ['Overlay by layer', 'The stacks slide into each other one layer at a time. Layer n of the PET sits exactly on layer n of the CT because the files share one grid. That match is what lets a network read them together.', [['PET scale', 'auto, top 0.3% = ' + petScale.toFixed(1)], ['Same grid', 'yes, by construction'], ['Layers merged', L]]],
+      ['Tumour from above', 'Looking straight down, every layer\'s tumour outline is drawn in a colour that shows its height, feet to head. Drag the cut-away slider to peel layers off the top and watch the tumour appear and shrink as you go down. This is the segmentation the network is asked to produce.' + maskNote,
+        [['Outline shown', V.hasLab ? 'your label' : 'PET demo rule'], ['Area at top visible layer', area.toFixed(0) + ' mm²'], [full ? 'Tumour volume' : 'Volume up to this layer', (full ? nTum * vox : acc * vox).toFixed(1) + ' mL']]]
+    ][step];
+    $('cap-title').textContent = T[0]; $('cap-text').textContent = T[1];
+    $('facts').innerHTML = T[2].map(function (r) { return '<span>' + r[0] + '</span><span>' + r[1] + '</span>'; }).join('');
+    $('hud').innerHTML = '<span>' + V.name + '</span><span>X <b>' + V.ext[0].toFixed(0) + ' mm</b> Y <b>' + V.ext[1].toFixed(0) + ' mm</b> Z <b>' + V.ext[2].toFixed(0) + ' mm</b></span>';
+  }
+  function go(s) { step = clamp(s, 0, 4); apply(true); }
+  $('steps').addEventListener('click', function (e) { var b = e.target.closest('.step'); if (b) { stopPlay(); go(parseInt(b.getAttribute('data-s'), 10)); } });
+  $('next').addEventListener('click', function () { stopPlay(); go(step + 1); });
+  $('prev').addEventListener('click', function () { stopPlay(); go(step - 1); });
+  function stopPlay() { if (playT) { clearInterval(playT); playT = 0; $('play').textContent = 'Play the story'; } }
+  $('play').addEventListener('click', function () {
+    if (playT) { stopPlay(); return; }
+    $('play').textContent = 'Stop'; if (step === 4) go(0);
+    playT = setInterval(function () { if (step >= 4) { stopPlay(); return; } go(step + 1); }, 4600);
+  });
+  function live() { var w = $('world'); w.style.setProperty('--dm', 0); apply(false, true); }
+  $('gap').addEventListener('input', live); $('cut').addEventListener('input', live);
+
+  (function drag() {
+    var w = $('vwrap'), down = false, lx = 0, ly = 0;
+    w.addEventListener('pointerdown', function (e) { down = true; lx = e.clientX; ly = e.clientY; w.classList.add('drag'); w.setPointerCapture(e.pointerId); });
+    w.addEventListener('pointermove', function (e) { if (!down) return; cam.rz += (e.clientX - lx) * 0.4; cam.rx = clamp(cam.rx - (e.clientY - ly) * 0.3, 0, 90); lx = e.clientX; ly = e.clientY; applyCam(); });
+    w.addEventListener('pointerup', function () { down = false; w.classList.remove('drag'); });
+  })();
+  window.addEventListener('resize', function () { if (V && step === 2) apply(false); });
+
+  // ---------- load your own files ----------
+  async function readNifti(file) {
+    var buf = await file.arrayBuffer(), u8 = new Uint8Array(buf);
+    if (u8[0] === 0x1f && u8[1] === 0x8b) {
+      if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot unzip .nii.gz. Unzip the file first.');
+      buf = await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+    }
+    var dv = new DataView(buf); if (dv.getInt32(0, true) !== 348) throw new Error(file.name + ' is not a little-endian NIfTI-1 file.');
+    var nx = dv.getInt16(42, true), ny = dv.getInt16(44, true), nz = dv.getInt16(46, true), dt = dv.getInt16(70, true);
+    var sp = [Math.abs(dv.getFloat32(80, true)), Math.abs(dv.getFloat32(84, true)), Math.abs(dv.getFloat32(88, true))];
+    var off = Math.floor(dv.getFloat32(108, true)), slope = dv.getFloat32(112, true) || 1, inter = dv.getFloat32(116, true) || 0, n = nx * ny * nz;
+    var T = { 2: Uint8Array, 4: Int16Array, 8: Int32Array, 16: Float32Array, 64: Float64Array, 256: Int8Array, 512: Uint16Array, 768: Uint32Array }[dt];
+    if (!T) throw new Error(file.name + ': data type ' + dt + ' is not supported.'); if (off % T.BYTES_PER_ELEMENT) throw new Error(file.name + ': unaligned data.');
+    var arr = new T(buf, off, n), sx = dv.getFloat32(280, true), sy = dv.getFloat32(300, true), sz = dv.getFloat32(320, true), has = (sx || sy || sz);
+    return { nx: nx, ny: ny, nz: nz, sp: sp, arr: arr, slope: slope, inter: inter, flip: has ? [sx > 0, sy > 0, sz > 0] : [false, true, true], name: file.name };
+  }
+  function role(name) { var u = name.toUpperCase(); if (u.indexOf('__CT') >= 0 || /(^|[_.-])CT[_.-]/.test(u)) return 'ct'; if (u.indexOf('__PT') >= 0 || u.indexOf('PET') >= 0 || /(^|[_.-])PT[_.-]/.test(u)) return 'pt'; return 'lab'; }
+  $('file-in').addEventListener('change', async function () {
+    var files = Array.prototype.slice.call(this.files), msg = $('msg'); if (!files.length) return; msg.textContent = 'Reading ' + files.length + ' file(s) in this browser…';
+    try {
+      var P = {};
+      for (var i = 0; i < files.length; i++) { var p = await readNifti(files[i]), r = role(files[i].name); if (P[r]) r = P.ct ? (P.pt ? 'lab' : 'pt') : 'ct'; P[r] = p; }
+      if (!P.ct && P.pt) { P.ct = P.pt; delete P.pt; } if (!P.ct) throw new Error('Load at least a CT file (name it …__CT.nii.gz).');
+      var C = P.ct, f = Math.max(1, Math.ceil(Math.max(C.nx, C.ny) / 256)), ox = Math.ceil(C.nx / f), oy = Math.ceil(C.ny / f), oz = C.nz, on = ox * oy * oz, extra = '';
+      function same(Q) { return Q.nx === C.nx && Q.ny === C.ny && Q.nz === C.nz; }
+      if (P.pt && !same(P.pt)) { extra += ' PET grid differs from CT, so PET was skipped.'; delete P.pt; } if (P.lab && !same(P.lab)) { extra += ' Label grid differs from CT, so it was skipped.'; delete P.lab; }
+      var ct = new Int16Array(on), pet = P.pt ? new Float32Array(on) : null, lab = P.lab ? new Uint8Array(on) : null;
+      for (var k = 0; k < oz; k++) for (var j = 0; j < oy; j++) for (var ii = 0; ii < ox; ii++) {
+        var o = ii + ox * (j + oy * k), src = ii * f + C.nx * (j * f + C.ny * k); ct[o] = clamp(C.arr[src] * C.slope + C.inter, -1024, 3071);
+        if (pet) pet[o] = Math.max(0, P.pt.arr[src] * P.pt.slope + P.pt.inter);
+        if (lab) { var m = 0; for (var dy = 0; dy < f && j * f + dy < C.ny; dy++) for (var dx = 0; dx < f && ii * f + dx < C.nx; dx++) { var vv = P.lab.arr[(ii * f + dx) + C.nx * ((j * f + dy) + C.ny * k)]; if (vv > m) m = vv; } lab[o] = m; }
+      }
+      V = { nx: ox, ny: oy, nz: oz, sx: C.sp[0] * f, sy: C.sp[1] * f, sz: C.sp[2], ext: [ox * C.sp[0] * f, oy * C.sp[1] * f, oz * C.sp[2]], ct: ct, pet: pet || new Float32Array(on), lab: lab || new Uint8Array(on), hasPet: !!pet, hasLab: !!lab, flip: C.flip, real: true, name: C.name.replace(/\.nii(\.gz)?$/i, '') };
+      build(); msg.textContent = 'Loaded ' + C.name + (pet ? ' + PET' : '') + (lab ? ' + label' : '') + '. Reduced ' + f + '× in-plane.' + extra + ' Nothing was uploaded.';
+    } catch (err) { msg.textContent = 'Could not load: ' + err.message; }
+    this.value = '';
+  });
+  $('reset').addEventListener('click', function () { $('msg').textContent = ''; V = gen(2, 2, 3); build(); });
+
+  // When this page sits inside the Scan Studio, the Studio sends its scan here.
+  window.addEventListener('message', function (e) {
+    if (e.source !== window.parent || window.parent === window || !e.data || e.data.type !== 'acf-volume' || !e.data.V) return;
+    var v = e.data.V; if (!v.ct || !v.nx) return;
+    v.name = v.name || (v.real ? 'Your scan' : 'Synthetic phantom'); v.ext = v.ext || [v.nx * v.sx, v.ny * v.sy, v.nz * v.sz]; v.flip = v.flip || [false, true, true];
+    if (!document.body.classList.contains('embed')) {
+      document.body.classList.add('embed');
+      var postH = function () { window.parent.postMessage({ type: 'acf-layers-height', h: document.querySelector('.app').getBoundingClientRect().height + 8 }, '*'); };
+      if (window.ResizeObserver) new ResizeObserver(postH).observe(document.querySelector('.app')); postH();
+    }
+    V = v; build();
+  });
+
+  V = gen(2, 2, 3); build();
+  if (window.parent !== window) window.parent.postMessage({ type: 'acf-layers-ready' }, '*');
+})();
+</script>
+
+</body></html>

@@ -34,3 +34,15 @@ Thumbs.db
 hecktor_cache/
 _probe*/
 runs/
+
+# ACF Studio (app/studio): screenshots, predictions and any image near the app are never committed
+studio_shots/
+test_predictions/
+app/studio/**/*.png
+app/studio/**/*.jpg
+app/studio/**/*.jpeg
+app/studio/**/*.webp
+*.dcm
+*.npz
+*.mha
+*.nrrd

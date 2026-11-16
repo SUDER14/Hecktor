@@ -1,4 +1,6 @@
 """Phase 4 pieces that need no training: sliding window, resampling, degradation, statistics."""
+import itertools
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -6,7 +8,12 @@ import torch
 
 from src.eval.evaluate_cases import call_model, coarsen_z
 from src.eval.infer import resample_to_grid, sliding_window_dual, window_starts
-from src.eval.stats import compare_models, paired_comparison, per_centre_table
+from src.eval.stats import (
+    compare_models,
+    holm_adjust,
+    paired_comparison,
+    per_centre_table,
+)
 
 
 def _aff(sp, o=(0, 0, 0)):
@@ -18,7 +25,7 @@ def _aff(sp, o=(0, 0, 0)):
 def test_window_starts_cover_volume_and_end_flush():
     assert window_starts(10, 16, 0.5) == [0]
     s = window_starts(100, 32, 0.5)
-    assert s[0] == 0 and s[-1] == 68 and all(b - a <= 16 for a, b in zip(s, s[1:]))
+    assert s[0] == 0 and s[-1] == 68 and all(b - a <= 16 for a, b in itertools.pairwise(s))
 
 
 def test_sliding_window_is_world_aligned_across_grids():
@@ -82,7 +89,7 @@ def test_paired_comparison_detects_shift_and_handles_ties_and_nan():
     assert r2["n_pairs"] == 27 and r2["n_dropped_nan"] == 3
 
 
-def test_bonferroni_and_per_centre():
+def test_holm_and_per_centre():
     rng = np.random.default_rng(1)
     rows = []
     for m, shift in (("B3", 0.0), ("B4", 0.08), ("B5", 0.0)):
@@ -91,10 +98,38 @@ def test_bonferroni_and_per_centre():
                          "dice": 0.5 + shift + 0.02 * (i % 5) + rng.normal(0, 0.005)})
     df = pd.DataFrame(rows)
     res = compare_models(df, "dice", [("B4", "B3"), ("B5", "B3")], git="abc")
-    assert res.loc[0, "p_bonferroni"] == pytest.approx(min(res.loc[0, "p_value"] * 2, 1))
+    # Holm with m = 2: the smaller p is multiplied by 2, the larger by 1 (and is never below the smaller one)
+    assert res.loc[0, "p_value"] < res.loc[1, "p_value"]
+    assert res.loc[0, "p_holm"] == pytest.approx(min(res.loc[0, "p_value"] * 2, 1))
+    assert res.loc[1, "p_holm"] == pytest.approx(max(res.loc[0, "p_holm"], res.loc[1, "p_value"]))
     assert res.loc[0, "significant"] and not res.loc[1, "significant"] and (res["git"] == "abc").all()
     t = per_centre_table(df, ["dice"], git="abc")
     assert set(t["centre"]) == {"A", "B"} and "dice_mean" in t and (t["git"] == "abc").all()
+
+
+def test_holm_known_answers():
+    # hand-worked: sorted 0.01, 0.03, 0.04 -> 3*0.01, 2*0.03, max(0.06, 1*0.04)
+    assert holm_adjust([0.01, 0.04, 0.03]) == pytest.approx([0.03, 0.06, 0.06])
+    assert holm_adjust([0.5, 0.9]) == pytest.approx([1.0, 1.0])
+    # an untestable comparison stays NaN and still counts in the family size
+    adj = holm_adjust([0.01, np.nan, 0.04])
+    assert adj[0] == pytest.approx(0.03) and np.isnan(adj[1]) and adj[2] == pytest.approx(0.08)
+    # never smaller than the raw p and never larger than Bonferroni
+    p = np.array([0.001, 0.02, 0.03, 0.2])
+    assert (holm_adjust(p) >= p).all() and (holm_adjust(p) <= np.minimum(p * 4, 1) + 1e-12).all()
+
+
+def test_seeds_are_averaged_per_case_before_the_test_and_median_interval_is_reported():
+    rows = []
+    for i in range(20):
+        for seed, off in ((0, -0.01), (1, 0.01)):
+            rows.append({"model": "B4", "patient_id": f"P{i}", "seed": seed, "dice": 0.6 + 0.01 * i + off + 0.05})
+            rows.append({"model": "B3", "patient_id": f"P{i}", "seed": seed, "dice": 0.6 + 0.01 * i + off})
+    res = compare_models(pd.DataFrame(rows), "dice", [("B4", "B3")])
+    r = res.loc[0]
+    assert r["n_pairs"] == 20                                   # 20 cases, not 40 case-seed rows
+    assert r["median_diff"] == pytest.approx(0.05)
+    assert r["median_ci_low"] == pytest.approx(0.05) and r["median_ci_high"] == pytest.approx(0.05)
 
 
 def test_call_model_dispatch():

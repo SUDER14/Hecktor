@@ -7,7 +7,13 @@ Every table row carries the git hash of the code that produced it.
  E3 resources         peak VRAM, preprocessing and inference wall-clock
  E4 calibration       ECE + reliability diagrams + uncertainty/error overlap
  E5 ablations         paired comparisons between named model pairs (B3 vs B4, B4 vs B5, ...)
- E6 statistics        paired Wilcoxon + Bonferroni + effect sizes on any per-case table
+ E6 statistics        paired Wilcoxon + Holm + effect sizes on any per-case table
+
+Status against docs/ANALYSIS_PLAN.md (2026-11-16): E5 and E6 follow the plan's test (paired Wilcoxon by case, Holm,
+median paired difference with a 10,000-resample bootstrap interval). E1-E4 still read the old two-grid loader
+(build_dual_datasets), which the shared-PET .acf pipeline does not use; the planned test-set evaluation is
+scripts/evaluate_test.py (Phase 7), and section 9 of the plan lists every difference. Do not report E1-E4 numbers
+from this module for the shared-PET runs.
 
 Nothing here fabricates a number: with no checkpoints or no GPU the functions either raise or
 write an explicit "not measured" marker.
@@ -24,14 +30,14 @@ import torch
 import yaml
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
-from src.data.conditioning import load_stats  # noqa: E402
-from src.data.dual_cache import build_dual_datasets, build_entry  # noqa: E402
-from src.eval.evaluate_cases import evaluate_dataset, pooled_ece, summarize  # noqa: E402
-from src.eval.stats import compare_models, per_centre_table  # noqa: E402
-from src.training.run import build_model  # noqa: E402
-from src.training.train import get_git_info  # noqa: E402
+from src.data.conditioning import load_stats
+from src.data.dual_cache import build_dual_datasets, build_entry
+from src.eval.evaluate_cases import evaluate_dataset, pooled_ece, summarize
+from src.eval.stats import compare_models, per_centre_table
+from src.training.run import build_model
+from src.training.train import get_git_info
 
 DEGRADE_MM = (None, 2.0, 3.0, 5.0, 7.0)  # None = native acquisition
 
@@ -193,7 +199,7 @@ def e5_ablations(per_case: pd.DataFrame, pairs: list[tuple[str, str]], out: str 
 
 
 def e6_statistics(per_case: pd.DataFrame, out: str | Path, reference: str, metrics=("dice", "hd95_mm")) -> pd.DataFrame:
-    """Every other model vs `reference`, Bonferroni over that family, plus per-centre means."""
+    """Every other model vs `reference`, Holm over that family, plus per-centre means."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     others = [m for m in per_case["model"].unique() if m != reference]

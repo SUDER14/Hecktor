@@ -36,7 +36,9 @@ Not built, by decision: the stored resampled cache for B1/B2 (20-case projection
 
 Still open:
 
-- Phases 4 to 7, 9 and 10 (see `results/fable_run/PROGRESS.txt` for the current phase).
-- `src/eval/experiments.py` E1-E6 still use the old two-grid loader and Bonferroni (Phase 5 replaces
-  Bonferroni with Holm).
-- Open decisions: `results/fable_run/NEEDS_DECISION.txt` items 2, 3, 4, 6, 7.
+- Phases 6, 7, 9 and 10 (see `results/fable_run/PROGRESS.txt` for the current phase).
+- B5 (evidential head) FAILS the Phase 4 per-label overfit gate: label 1 is not learned
+  (`results/fable_run/B5_note.txt`). Do not train B5 on a GPU until NEEDS_DECISION item 8 is settled.
+- `docs/ANALYSIS_PLAN.md` is the committed analysis plan (Holm, not Bonferroni). `src/eval/experiments.py`
+  E5/E6 follow it; E1-E4 still use the old two-grid loader and are replaced by the Phase 7 test script.
+- Open decisions: `results/fable_run/NEEDS_DECISION.txt` items 2, 3, 4, 6, 7, 8.

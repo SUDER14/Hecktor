@@ -85,7 +85,7 @@ def check_plan_committed(root: Path = ROOT) -> dict:
         raise SystemExit(f"refusing to run: {PLAN} on disk differs from the committed version. Commit the change "
                          "(and list it in section 11 of the plan) before any test run.")
     content = _git("cat-file", "blob", head_blob, root=root, binary=True)
-    return {"commit": commit, "plan_git_blob": head_blob, "plan_sha256": hashlib.sha256(content).hexdigest()}
+    return {"commit": commit, "plan_git_blob": head_blob, "plan_sha256": hashlib.sha256(_lf(content)).hexdigest()}
 
 
 def check_clean_tree(root: Path = ROOT) -> None:
@@ -110,11 +110,31 @@ def check_out_root(out_root: Path, root: Path = ROOT) -> Path:
 
 
 def sha256_file(path) -> str:
+    """Raw bytes. For binary files (checkpoints, NIfTI predictions) only."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def _lf(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n")
+
+
+def sha256_text(path) -> str:
+    """sha256 of a TEXT file after CRLF -> LF. The same commit is checked out with LF on Colab and with CRLF on
+    Windows (core.autocrlf=true), so a hash of the raw bytes would call one split file two different files.
+    Use for the split, the conditioning statistics and the plan; never for binary files (see sha256_file)."""
+    return hashlib.sha256(_lf(Path(path).read_bytes())).hexdigest()
+
+
+def text_hash_matches(recorded: str | None, path) -> bool:
+    """True when `recorded` is the hash of this file's text. scripts/train.py (Phase 6) records the raw bytes of
+    its own checkout, which is the LF form on Linux and the CRLF form on Windows, so both forms are accepted;
+    they are the same text."""
+    lf = _lf(Path(path).read_bytes())
+    return recorded in (hashlib.sha256(lf).hexdigest(), hashlib.sha256(lf.replace(b"\n", b"\r\n")).hexdigest())
 
 
 def _atomic_json(path: Path, obj) -> None:
@@ -699,7 +719,7 @@ def _check_run_manifest(run_dir: Path, split_path: Path, stats_path: Path) -> di
     if m.get("synthetic"):
         raise SystemExit(f"run {run_dir.name} was trained with --synthetic; it cannot be scored on real test data")
     for key, path in (("split_sha256", split_path), ("conditioning_stats_sha256", stats_path)):
-        if m.get(key) != sha256_file(path):
+        if not text_hash_matches(m.get(key), path):
             raise SystemExit(f"{path.name} in this checkout is not the file the run was trained with ({key} differs)")
     return m
 
@@ -715,7 +735,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
         if config is None and run_dir is None:
             raise SystemExit("--synthetic needs --config (a model config; weights are freshly initialised) or --run-dir")
         git = {"commit": _git("rev-parse", "HEAD"), "plan_git_blob": None,
-               "plan_sha256": sha256_file(ROOT / PLAN) if (ROOT / PLAN).exists() else None}
+               "plan_sha256": sha256_text(ROOT / PLAN) if (ROOT / PLAN).exists() else None}
         run_dir = Path(run_dir) if run_dir is not None else make_synthetic_run(config, list(overrides), out_root)
         results_root = Path(results_root) if results_root is not None else out_root / "results_test_synthetic"
     else:
@@ -766,7 +786,7 @@ def evaluate(run_dir: Path | None, data_root: Path | None, out_root: Path, synth
             ncfg = copy.deepcopy(cfg)
             ncfg["data"]["mode"] = "native"
             native_test = AcfVolumeDataset(samples(split["test"]), data_root, ncfg, stats)
-        hashes = {"split_sha256": sha256_file(split_path), "conditioning_stats_sha256": sha256_file(stats_path)}
+        hashes = {"split_sha256": sha256_text(split_path), "conditioning_stats_sha256": sha256_text(stats_path)}
 
     identity = {"run": name, "commit": git["commit"], "plan_sha256": git["plan_sha256"],
                 "checkpoint_sha256": ck["checkpoint_sha256"], "synthetic": synthetic}

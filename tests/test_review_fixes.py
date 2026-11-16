@@ -100,3 +100,49 @@ def test_checkpoint_config_paths_of_the_training_machine_are_not_used_or_recorde
     man = json.loads(text)
     assert man["checkpoint"] == "checkpoints/best.pt" and man["predictions_dir"] == f"test_predictions/{res.name}"
     assert man["config"]["split"]["path"] == "configs/splits/hecktor2026_seed42.json"
+
+
+# R4 ------------------------------------------------------------------------------------- line-ending hashes
+def test_text_hashes_do_not_depend_on_the_checkout_line_endings(tmp_path):
+    """The same commit is checked out with LF on Colab and with CRLF on Windows (core.autocrlf=true). A hash of
+    the raw bytes then differs for the same split file, and the test script would refuse a correctly trained
+    run (or, worse, a habit of overriding the check would form). Text files are hashed after CRLF -> LF."""
+    import hashlib
+    import subprocess
+
+    from src.eval import locked_test as lt
+
+    lf = b'{\n  "train": ["a"],\n  "val": ["b"],\n  "test": ["c"]\n}\n'
+    (tmp_path / "split_lf.json").write_bytes(lf)
+    (tmp_path / "split_crlf.json").write_bytes(lf.replace(b"\n", b"\r\n"))
+    (tmp_path / "split_other.json").write_bytes(lf.replace(b'"a"', b'"z"'))
+    want = hashlib.sha256(lf).hexdigest()
+    assert lt.sha256_text(tmp_path / "split_lf.json") == lt.sha256_text(tmp_path / "split_crlf.json") == want
+    assert lt.sha256_text(tmp_path / "split_other.json") != want
+    assert lt.sha256_file(tmp_path / "split_lf.json") != lt.sha256_file(tmp_path / "split_crlf.json")   # raw bytes do differ
+
+    # a run trained from an LF checkout, scored from a CRLF checkout (and the reverse, as the Phase 6 trainer
+    # recorded raw bytes): accepted. Different content: refused.
+    run = tmp_path / "run"
+    run.mkdir()
+    for recorded in (want, hashlib.sha256(lf.replace(b"\n", b"\r\n")).hexdigest()):
+        (run / "manifest.json").write_text(json.dumps({"finished": True, "synthetic": False, "split_sha256": recorded,
+                                                       "conditioning_stats_sha256": recorded}))
+        for local in ("split_lf.json", "split_crlf.json"):
+            assert lt._check_run_manifest(run, tmp_path / local, tmp_path / local)["finished"]
+        with pytest.raises(SystemExit, match="is not the file the run was trained with"):
+            lt._check_run_manifest(run, tmp_path / "split_other.json", tmp_path / "split_lf.json")
+
+    # the plan hash is the same whether the plan was committed with LF or with CRLF bytes
+    shas = []
+    for i, eol in enumerate((b"\n", b"\r\n")):
+        repo = tmp_path / f"repo{i}"
+        (repo / "docs").mkdir(parents=True)
+        for args in (["init", "-q"], ["config", "user.name", "t"], ["config", "user.email", "t@example.invalid"],
+                     ["config", "core.autocrlf", "false"]):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+        (repo / lt.PLAN).write_bytes(b"# plan" + eol + b"line two" + eol)
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "plan"], cwd=repo, check=True, capture_output=True)
+        shas.append(lt.check_plan_committed(repo)["plan_sha256"])
+    assert shas[0] == shas[1] == hashlib.sha256(b"# plan\nline two\n").hexdigest()
